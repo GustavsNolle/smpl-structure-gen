@@ -13,15 +13,14 @@ build/
 venv/
 env/
 
-# Data files (large, downloaded separately)
+# Data files (downloaded separately)
 data/raw/
 data/processed/
 data/external/
 *.csv
-*.xlsx
-*.parquet
-*.h5
-*.hdf5
+*.csv.gz
+*.sdf
+*.mol2
 
 # Model checkpoints & logs
 checkpoints/

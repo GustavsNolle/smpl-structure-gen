@@ -3,39 +3,42 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "trade-flow-gcn"
+name = "mol-prop-gnn"
 version = "0.1.0"
-description = "TradeFlowGNN: Forecasting Bilateral Trade with Graph Neural Networks"
+description = "MolPropGNN: Small Molecule Property Prediction with Graph Neural Networks"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.10"
 authors = [
-    {name = "TradeFlowGNN Team"},
+    {name = "MolPropGNN Team"},
 ]
 
 dependencies = [
     # Core ML
     "torch>=2.0",
     "torch-geometric>=2.4",
+    "tensorboard",
+    "tensorboardX",
     "pytorch-lightning>=2.0",
+
+    # Chemistry
+    "rdkit>=2023.3",
 
     # Data
     "pandas>=2.0",
     "numpy>=1.24",
     "scikit-learn>=1.3",
     "requests>=2.31",
-    "openpyxl>=3.1",
-    "pyarrow>=12.0",
     "xgboost>=2.0",
     "lightgbm>=4.0",
 
     # Visualization
     "matplotlib>=3.7",
     "seaborn>=0.12",
-    "networkx>=3.1",
 
     # Config
     "pyyaml>=6.0",
+    "tqdm>=4.65",
 ]
 
 [project.optional-dependencies]

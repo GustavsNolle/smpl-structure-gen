@@ -1,113 +1,69 @@
-# TradeFlowGNN Default Configuration
+# MolPropGNN Default Configuration
 # -----------------------------------
 
 # ── Data ──────────────────────────────────────────────────────────────
 data:
-  # CEPII Gravity Database
-  source_url: "http://www.cepii.fr/DATA_DOWNLOAD/gravity/data/Gravity_csv_V202211.zip"
+  # MoleculeNet dataset
+  dataset_name: "bbbp"
+  task_type: "classification"
+  num_tasks: 1
+
+  # Data directories
   raw_dir: "data/raw"
   processed_dir: "data/processed"
   num_workers: 0
 
-  # NEW: Enable Multilayer Graph using BACI Dataset
-  use_baci: true
-  
-  # NEW: Enable Year-over-Year Delta prediction target
-  # NEW: Enable Year-over-Year Delta prediction target
-  use_deltas: true
-  
-  # NEW: Enable Autoregressive Time-Series routing
-  num_lags: 2
-
-  # Year range for the study
-  year_start: 2000
-  year_end: 2019
-
-  # Temporal split (train on past, validate on recent, test on latest)
-  train_years: [2000, 2014]   # inclusive range
-  val_years: [2015, 2016]
-  test_years: [2017, 2019]
-
-  # Country subset: G20 + major trade partners
-  countries:
-    - USA  # United States
-    - CHN  # China
-    - JPN  # Japan
-    - DEU  # Germany
-    - GBR  # United Kingdom
-    - FRA  # France
-    - IND  # India
-    - ITA  # Italy
-    - BRA  # Brazil
-    - CAN  # Canada
-    - KOR  # South Korea
-    - RUS  # Russia
-    - AUS  # Australia
-    - MEX  # Mexico
-    - IDN  # Indonesia
-    - TUR  # Turkey
-    - SAU  # Saudi Arabia
-    - ARG  # Argentina
-    - ZAF  # South Africa
-    - NLD  # Netherlands
-    - CHE  # Switzerland
-    - ESP  # Spain
-    - SGP  # Singapore
-    - THA  # Thailand
-    - MYS  # Malaysia
-    - VNM  # Vietnam
-    - POL  # Poland
-    - BEL  # Belgium
-    - SWE  # Sweden
-    - NOR  # Norway
-    - ARE  # UAE
-    - IRL  # Ireland
-    - CHL  # Chile
-    - NGA  # Nigeria
-    - EGY  # Egypt
-    - PHL  # Philippines
-    - COL  # Colombia
-    - CZE  # Czech Republic
-    - NZL  # New Zealand
-    - HKG  # Hong Kong
-
-  node_features:
-    - "gdp"
-    - "gdpcap"
-    - "pop"
-
-  edge_features:
-    - "distw_harmonic"
-    - "contig"         
-    - "comlang_off"    
-    - "col_dep_ever"   
-    - "comrelig"       
-    - "fta_wto"        
+  # Splitting strategy: "scaffold" or "random"
+  split_type: "scaffold"
+  frac_train: 0.8
+  frac_val: 0.1
+  frac_test: 0.1
 
 # ── Model ─────────────────────────────────────────────────────────────
 model:
-  name: "rgcn"   # Switch to RGCN because of multi-edges
+  name: "gcn"
 
-  # GCN architecture
   gcn:
-    node_input_dim: 3
-    edge_input_dim: 27  # base 6 + one-hot 21
     hidden_dim: 64
     num_gnn_layers: 3
+    decoder_hidden_dim: 64
     dropout: 0.2
-    decoder_hidden_dim: 32
 
-  # MLP baseline
+  gat:
+    hidden_dim: 32
+    num_gnn_layers: 2
+    heads: 4
+    decoder_hidden_dim: 64
+    dropout: 0.2
+
+  egnn:
+    hidden_dim: 64
+    num_gnn_layers: 3
+    decoder_hidden_dim: 64
+    dropout: 0.2
+
+  gine:
+    hidden_dim: 64
+    num_gnn_layers: 3
+    decoder_hidden_dim: 64
+    dropout: 0.2
+
+  rgcn:
+    hidden_dim: 64
+    num_gnn_layers: 3
+    num_relations: 4
+    decoder_hidden_dim: 64
+    dropout: 0.2
+
   mlp:
-    input_dim: 33  # 2*3 (node) + 27 (edge)
     hidden_dims: [64, 32]
     dropout: 0.2
 
 # ── Training ──────────────────────────────────────────────────────────
 training:
   seed: 42
-  max_epochs: 50
-  batch_size: null
+  max_epochs: 100
+  batch_size: 32
   learning_rate: 0.001
   weight_decay: 0.0001
   scheduler:
@@ -121,6 +77,6 @@ training:
 
 # ── Logging ───────────────────────────────────────────────────────────
 logging:
-  project_name: "trade-flow-gcn"
+  project_name: "mol-prop-gnn"
   save_dir: "lightning_logs"
   log_every_n_steps: 1
