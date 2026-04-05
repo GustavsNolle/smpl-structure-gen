@@ -40,7 +40,7 @@ class MolRGCN(nn.Module):
 
     def __init__(
         self,
-        node_input_dim: int = 39,
+        node_input_dim: int = 38,
         edge_input_dim: int = 13,
         hidden_dim: int = 64,
         num_layers: int = 3,
@@ -76,18 +76,22 @@ class MolRGCN(nn.Module):
             nn.Linear(decoder_hidden_dim, output_dim),
         )
 
-    def encode(self, x, edge_index, edge_type):
+    def encode(self, x, edge_index, edge_attr=None, edge_type=None, **kwargs):
+        if edge_type is None and edge_attr is not None:
+            # Fallback for RGCN which typically uses typed edges
+            edge_type = torch.zeros(edge_attr.size(0), dtype=torch.long, device=edge_attr.device)
+
         for conv, norm, residual in zip(self.convs, self.norms, self.residuals):
             h = conv(x, edge_index, edge_type)
             h = F.relu(h)
             h = F.dropout(h, p=self.dropout, training=self.training)
             x = norm(h + residual(x))
-        return x
+    @property
+    def out_channels(self) -> int:
+        """Dimension of node embeddings after encoding."""
+        return self.norms[-1].normalized_shape[0] if self.norms else self.node_input_dim
 
     def forward(self, x, edge_index, edge_attr=None, batch=None, edge_type=None, **kwargs):
-        if edge_type is None and edge_attr is not None:
-            edge_type = torch.zeros(edge_attr.size(0), dtype=torch.long, device=edge_attr.device)
-
-        h = self.encode(x, edge_index, edge_type)
+        h = self.encode(x=x, edge_index=edge_index, edge_attr=edge_attr, edge_type=edge_type, **kwargs)
         h = global_mean_pool(h, batch)
         return self.graph_readout(h)

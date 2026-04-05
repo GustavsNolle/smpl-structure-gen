@@ -44,6 +44,9 @@ logger = logging.getLogger(__name__)
 BENCHMARK_DATASETS = {
     "bbbp": {"task_type": "classification", "num_tasks": 1, "metric": "auroc"},
     "esol": {"task_type": "regression", "num_tasks": 1, "metric": "rmse"},
+    "bace": {"task_type": "classification", "num_tasks": 1, "metric": "auroc"},
+    "lipophilicity": {"task_type": "regression", "num_tasks": 1, "metric": "rmse"},
+    "freesolv": {"task_type": "regression", "num_tasks": 1, "metric": "rmse"},
 }
 
 DL_MODEL_NAMES = ["mlp_baseline", "gcn", "gat", "gine"]

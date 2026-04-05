@@ -68,7 +68,7 @@ class MolGCN(nn.Module):
 
     def __init__(
         self,
-        node_input_dim: int = 39,
+        node_input_dim: int = 38,
         edge_input_dim: int = 13,
         hidden_dim: int = 64,
         num_gnn_layers: int = 3,
@@ -112,15 +112,15 @@ class MolGCN(nn.Module):
         edge_index: torch.Tensor,
         edge_attr: torch.Tensor,
     ) -> torch.Tensor:
-        """Encode atom features through GNN layers.
-
-        Returns
-        -------
-        (N, hidden_dim) atom embeddings
-        """
+        """Encode atom features through GNN layers."""
         for block in self.blocks:
             x = block(x, edge_index, edge_attr)
         return x
+
+    @property
+    def out_channels(self) -> int:
+        """Dimension of node embeddings after encoding."""
+        return self.blocks[-1].norm.normalized_shape[0] if self.blocks else self.node_input_dim
 
     def forward(
         self,
@@ -130,12 +130,7 @@ class MolGCN(nn.Module):
         batch: torch.Tensor | None = None,
         **kwargs,
     ) -> torch.Tensor:
-        """Full forward pass: encode atoms → pool → predict.
-
-        Returns
-        -------
-        (B, output_dim) graph-level predictions
-        """
+        """Full forward pass: encode atoms → pool → predict."""
         h = self.encode(x, edge_index, edge_attr)
         h = global_mean_pool(h, batch)
         return self.graph_readout(h)

@@ -35,7 +35,7 @@ class MolGINE(nn.Module):
 
     def __init__(
         self,
-        node_input_dim: int = 39,
+        node_input_dim: int = 38,
         edge_input_dim: int = 13,
         hidden_dim: int = 64,
         num_gnn_layers: int = 3,
@@ -105,7 +105,10 @@ class MolGINE(nn.Module):
             h_next = F.dropout(h_next, p=self.dropout, training=self.training)
             h = h + h_next  # Residual connection
 
-        return h
+    @property
+    def out_channels(self) -> int:
+        """Dimension of node embeddings after encoding."""
+        return self.norms[-1].normalized_shape[0] if self.norms else self.hidden_dim
 
     def forward(
         self,

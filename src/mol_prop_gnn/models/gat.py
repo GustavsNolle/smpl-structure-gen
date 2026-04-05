@@ -72,7 +72,7 @@ class MolGAT(nn.Module):
 
     def __init__(
         self,
-        node_input_dim: int = 39,
+        node_input_dim: int = 38,
         edge_input_dim: int = 13,
         hidden_dim: int = 32,
         num_gnn_layers: int = 2,
@@ -125,6 +125,11 @@ class MolGAT(nn.Module):
         for block in self.blocks:
             x = block(x, edge_index, edge_attr)
         return x
+
+    @property
+    def out_channels(self) -> int:
+        """Dimension of node embeddings after encoding."""
+        return self.blocks[-1].conv.out_channels * self.blocks[-1].conv.heads
 
     def forward(
         self,

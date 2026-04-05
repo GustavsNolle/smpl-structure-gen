@@ -71,7 +71,7 @@ class MolEGNN(nn.Module):
 
     def __init__(
         self,
-        node_input_dim: int = 39,
+        node_input_dim: int = 38,
         edge_input_dim: int = 13,
         hidden_dim: int = 64,
         num_layers: int = 3,
@@ -100,7 +100,10 @@ class MolEGNN(nn.Module):
             x = layer(x, edge_index, edge_attr)
             x = F.relu(x)
             x = F.dropout(x, p=self.dropout, training=self.training)
-        return x
+    @property
+    def out_channels(self) -> int:
+        """Dimension of node embeddings after encoding."""
+        return self.layers[-1].norm.normalized_shape[0] if self.layers else self.node_input_dim
 
     def forward(self, x, edge_index, edge_attr, batch=None, **kwargs):
         h = self.encode(x, edge_index, edge_attr)
