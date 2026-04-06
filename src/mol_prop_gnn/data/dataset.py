@@ -16,8 +16,10 @@ from typing import Any
 
 import pytorch_lightning as pl
 import torch
+from torch.utils.data import WeightedRandomSampler
 from torch_geometric.data import Data
 from torch_geometric.loader import DataLoader
+from torch_geometric.utils import degree
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +50,8 @@ class MoleculeDataModule(pl.LightningDataModule):
         val_idx: list[int],
         test_idx: list[int],
         batch_size: int = 32,
-        num_workers: int = 0,
+        num_workers: int = 8,
+        use_balanced_sampler: bool = False,
     ) -> None:
         super().__init__()
         self.graphs = graphs
@@ -57,15 +60,24 @@ class MoleculeDataModule(pl.LightningDataModule):
         self.test_idx = test_idx
         self.batch_size = batch_size
         self.num_workers = num_workers
+        self.use_balanced_sampler = use_balanced_sampler
 
         self.train_dataset: list[Data] = []
         self.val_dataset: list[Data] = []
         self.test_dataset: list[Data] = []
+        self.train_sampler: WeightedRandomSampler | None = None
 
     def setup(self, stage: str | None = None) -> None:
-        self.train_dataset = [self.graphs[i] for i in self.train_idx]
-        self.val_dataset = [self.graphs[i] for i in self.val_idx]
-        self.test_dataset = [self.graphs[i] for i in self.test_idx]
+        if isinstance(self.graphs, torch.utils.data.Dataset) and not isinstance(self.graphs, list):
+            # Efficient slicing for PyG/Torch datasets
+            self.train_dataset = self.graphs[self.train_idx]
+            self.val_dataset = self.graphs[self.val_idx]
+            self.test_dataset = self.graphs[self.test_idx]
+        else:
+            # Fallback for standard lists
+            self.train_dataset = [self.graphs[i] for i in self.train_idx]
+            self.val_dataset = [self.graphs[i] for i in self.val_idx]
+            self.test_dataset = [self.graphs[i] for i in self.test_idx]
 
         logger.info(
             "Data split — train: %d, val: %d, test: %d",
@@ -81,19 +93,44 @@ class MoleculeDataModule(pl.LightningDataModule):
             ("test", self.test_dataset),
         ]:
             if dataset:
-                import torch
                 labels = torch.cat([g.y for g in dataset]).numpy().flatten()
                 valid = labels[~__import__("numpy").isnan(labels)]
                 unique, counts = __import__("numpy").unique(valid, return_counts=True)
                 dist = {f"{int(u)}": int(c) for u, c in zip(unique, counts)}
                 logger.info("  %s class dist: %s (n=%d)", name, dist, len(valid))
 
+        # 1. Compute Balanced Weights for Training Set
+        if self.use_balanced_sampler and self.train_dataset:
+            logger.info("Computing balanced weights for training set...")
+            # y is (num_samples, num_tasks)
+            all_y = torch.cat([g.y for g in self.train_dataset])
+            # mask of valid labels (not NaN)
+            mask = ~torch.isnan(all_y)
+            # number of samples per task
+            samples_per_task = mask.sum(dim=0).float()
+            # weight per task (inverse frequency)
+            task_weights = 1.0 / (samples_per_task + 1e-6)
+            
+            # For each sample, compute its weight as the sum of weights of its labeled tasks
+            # This ensures that samples from rare tasks (small datasets) are seen more often.
+            sample_weights = (mask.float() * task_weights).sum(dim=1)
+            
+            self.train_sampler = WeightedRandomSampler(
+                weights=sample_weights,
+                num_samples=len(self.train_dataset),
+                replacement=True
+            )
+            logger.info("Balanced sampler initialized.")
+
     def train_dataloader(self):
         return DataLoader(
             self.train_dataset,
             batch_size=self.batch_size,
-            shuffle=True,
+            shuffle=(self.train_sampler is None),
+            sampler=self.train_sampler,
             num_workers=self.num_workers,
+            pin_memory=True,
+            persistent_workers=(self.num_workers > 0),
         )
 
     def val_dataloader(self):
@@ -102,6 +139,8 @@ class MoleculeDataModule(pl.LightningDataModule):
             batch_size=self.batch_size,
             shuffle=False,
             num_workers=self.num_workers,
+            pin_memory=True,
+            persistent_workers=(self.num_workers > 0),
         )
 
     def test_dataloader(self):
@@ -110,4 +149,29 @@ class MoleculeDataModule(pl.LightningDataModule):
             batch_size=self.batch_size,
             shuffle=False,
             num_workers=self.num_workers,
+            pin_memory=True,
+            persistent_workers=(self.num_workers > 0),
         )
+
+    def get_degree_histogram(self) -> torch.Tensor:
+        """Calculate node degree distribution from the training set.
+        Required for PNAConv initialization.
+        """
+        if not self.train_dataset:
+            raise ValueError("Training dataset not setup. Call setup() first.")
+            
+        # Collect degrees from all training graphs
+        degrees = []
+        for data in self.train_dataset:
+            d = degree(data.edge_index[0], num_nodes=data.num_nodes, dtype=torch.long)
+            degrees.append(d)
+        
+        all_degrees = torch.cat(degrees)
+        max_degree = all_degrees.max().item()
+        
+        # Create histogram
+        hist = torch.zeros(max_degree + 1, dtype=torch.long)
+        for d in all_degrees:
+            hist[d] += 1
+            
+        return hist

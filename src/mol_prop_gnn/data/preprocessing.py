@@ -17,7 +17,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import torch
-from torch_geometric.data import Data, Batch
+from torch_geometric.data import Data, Batch, InMemoryDataset
 from torch_geometric.utils import subgraph
 
 # Suppress noisy RDKit warnings (invalid SMILES, valence errors)
@@ -46,6 +46,17 @@ def _process_mol_row_simple(args):
     if data is not None and data.x.shape[0] > 0:
         return data, smiles, idx
     return None, None, None
+
+
+class MoleculeDataset(InMemoryDataset):
+    """PyTorch Geometric InMemoryDataset for faster batching.
+    
+    Compiles individual Data objects into a contiguous memory block.
+    """
+    def __init__(self, data_list: list[Data] | None = None):
+        super().__init__(None)
+        if data_list is not None:
+            self.data, self.slices = self.collate(data_list)
 
 
 # ── Atom (Node) Featurization ────────────────────────────────────────────
@@ -166,19 +177,32 @@ def smiles_to_graph(
     smiles: str,
     y: np.ndarray | None = None,
 ) -> Data | None:
-    """Convert a SMILES string to a PyG Data object.
+    """Convert a SMILES string to a PyG Data object."""
+    raw = smiles_to_graph_dict(smiles, y)
+    if raw is None:
+        return None
+    
+    data = Data(
+        x=torch.from_numpy(raw["x"]),
+        edge_index=torch.from_numpy(raw["edge_index"]),
+        edge_attr=torch.from_numpy(raw["edge_attr"]),
+    )
+    data.edge_type = torch.from_numpy(raw["edge_type"])
+    data.smiles = raw["smiles"]
+    if raw["y"] is not None:
+        data.y = torch.from_numpy(raw["y"]).unsqueeze(0)
+    
+    return data
 
-    Parameters
-    ----------
-    smiles : str
-        SMILES representation of the molecule.
-    y : np.ndarray, optional
-        Target label(s) for the molecule.
 
-    Returns
-    -------
-    Data or None
-        PyG Data object, or None if the SMILES is invalid.
+def smiles_to_graph_dict(
+    smiles: str,
+    y: np.ndarray | None = None,
+) -> dict[str, Any] | None:
+    """Convert a SMILES string to a raw dictionary of NumPy arrays.
+    
+    This avoids PyTorch's shared memory (mmap) overhead during multiprocessing,
+    as NumPy objects are pickled and passed more reliably for massive datasets.
     """
     from rdkit import Chem
 
@@ -190,13 +214,13 @@ def smiles_to_graph(
     node_feats = []
     for atom in mol.GetAtoms():
         node_feats.append(atom_features(atom))
-    x = torch.tensor(node_feats, dtype=torch.float32)
+    node_feats = np.array(node_feats, dtype=np.float32)
 
     # Edge index and features (undirected: add both directions)
     if mol.GetNumBonds() == 0:
-        edge_index = torch.zeros((2, 0), dtype=torch.long)
-        edge_attr = torch.zeros((0, get_edge_feature_dim()), dtype=torch.float32)
-        edge_type = torch.zeros(0, dtype=torch.long)
+        edge_index = np.zeros((2, 0), dtype=np.int64)
+        edge_attr = np.zeros((0, get_edge_feature_dim()), dtype=np.float32)
+        edge_type = np.zeros(0, dtype=np.int64)
     else:
         src_list, dst_list = [], []
         edge_feats = []
@@ -214,104 +238,20 @@ def smiles_to_graph(
             edge_feats.extend([bf, bf])
             edge_types.extend([rel, rel])
 
-        edge_index = torch.tensor([src_list, dst_list], dtype=torch.long)
-        edge_attr = torch.tensor(edge_feats, dtype=torch.float32)
-        edge_type = torch.tensor(edge_types, dtype=torch.long)
+        edge_index = np.array([src_list, dst_list], dtype=np.int64)
+        edge_attr = np.array(edge_feats, dtype=np.float32)
+        edge_type = np.array(edge_types, dtype=np.int64)
 
-    data = Data(x=x, edge_index=edge_index, edge_attr=edge_attr)
-    data.edge_type = edge_type
-    data.smiles = smiles
-
-    if y is not None:
-        data.y = torch.tensor(y, dtype=torch.float32).unsqueeze(0)
-
-    return data
-
-
-def manual_radius_graph(pos: torch.Tensor, r: float, loop: bool = False) -> torch.Tensor:
-    """Manual implementation of radius_graph to avoid torch-cluster dependency."""
-    # Compute pairwise Euclidean distances [N, N]
-    dist = torch.cdist(pos, pos)
-    
-    # Mask by radius
-    adj = dist <= r
-    
-    if not loop:
-        adj.fill_diagonal_(False)
-        
-    # Convert to edge_index [2, E]
-    edge_index = adj.nonzero(as_tuple=False).t().contiguous()
-    return edge_index
+    return {
+        "x": node_feats,
+        "edge_index": edge_index,
+        "edge_attr": edge_attr,
+        "edge_type": edge_type,
+        "smiles": smiles,
+        "y": y
+    }
 
 
-def smiles_to_3d_graph(smiles: str, y: np.ndarray | None = None, cutoff: float = 4.0) -> Data | None:
-    """Convert SMILES to a 3D spatial graph using RDKit conformer generation.
-    
-    Uses ETKDGv3 for 3D coordinates and a spatial radius graph for connectivity.
-    """
-    from rdkit import Chem
-    from rdkit.Chem import AllChem
-    
-    mol = Chem.MolFromSmiles(smiles)
-    if mol is None:
-        return None
-    
-    # 1. 3D Conformer Generation (ETKDGv3)
-    # Adding H's is crucial for valid 3D geometry
-    mol = Chem.AddHs(mol)
-    params = AllChem.ETKDGv3()
-    params.randomSeed = 42
-    
-    try:
-        # We must use the params object to correctly access ETKDGv3 (ETversion=3)
-        # as some RDKit versions don't support ETversion=3 via keywords.
-        embed_status = AllChem.EmbedMolecule(mol, params)
-        
-        if embed_status == -1:
-            # Fallback to random coordinates if standard distance geometry fails
-            params.useRandomCoords = True
-            embed_status = AllChem.EmbedMolecule(mol, params)
-            
-        if embed_status == -1:
-            logger.warning("3D Embedding failed for SMILES: %s", smiles)
-            return None
-            
-        # Optimize with a cap on iterations for speed
-        try:
-            # MMFF optimization is the slow part; 200 iterations is a good balance
-            AllChem.MMFFOptimizeMolecule(mol, maxIters=200)
-        except Exception:
-            # Proceed with unoptimized ETKDG coordinates
-            pass
-            
-    except Exception as e:
-        logger.error("Exception during 3D generation for %s: %s", smiles, str(e))
-        return None
-    
-    # 2. Extract Pos and Atomic Numbers
-    conformer = mol.GetConformer()
-    pos = []
-    atomic_nums = []
-    for i in range(mol.GetNumAtoms()):
-        pos.append(list(conformer.GetAtomPosition(i)))
-        atomic_nums.append(mol.GetAtomWithIdx(i).GetAtomicNum())
-    
-    pos = torch.tensor(pos, dtype=torch.float32)
-    x = torch.tensor(atomic_nums, dtype=torch.long) # Used for Embedding(atomic_num)
-    
-    # 3. Spatial Connectivity (Radius Graph)
-    edge_index = manual_radius_graph(pos, r=cutoff, loop=False)
-    
-    # 4. Spatial Edge Features (Euclidean Distances)
-    dist = (pos[edge_index[0]] - pos[edge_index[1]]).norm(dim=-1, keepdim=True)
-    
-    data = Data(x=x, pos=pos, edge_index=edge_index, edge_attr=dist)
-    data.smiles = smiles
-    
-    if y is not None:
-        data.y = torch.tensor(y, dtype=torch.float32).unsqueeze(0)
-        
-    return data
 
 
 # ── Molecular Fingerprints (for tabular baselines) ──────────────────────
@@ -389,36 +329,34 @@ def scaffold_split(
     frac_train: float = 0.8,
     frac_val: float = 0.1,
     frac_test: float = 0.1,
-    seed: int = 42,
+    **kwargs
 ) -> tuple[list[int], list[int], list[int]]:
-    """Split molecule indices by Bemis-Murcko scaffold.
-
-    Ensures that molecules with the same scaffold are in the same split,
-    providing a more realistic evaluation of generalization.
-
-    Uses randomized scaffold ordering (standard DeepChem approach) to
-    avoid creating splits with extreme class imbalance. Falls back to
-    random split if any split ends up empty (can happen with small datasets).
-
-    Returns
-    -------
-    (train_indices, val_indices, test_indices)
+    """Deterministic split by Murcko scaffold.
+    
+    1. Group molecules by scaffold.
+    2. Sort scaffold groups by size in descending order (largest first).
+    3. Sequentially fill splits until quotas are met.
+    
+    This ensures that common scaffolds stay in the training set and the
+    test set contains the most 'unique' structural variations.
     """
     from collections import defaultdict
-
-    rng = np.random.RandomState(seed)
 
     scaffolds = defaultdict(list)
     for idx, smi in enumerate(smiles_list):
         try:
             scaffold = generate_scaffold(smi)
         except Exception:
-            scaffold = smi  # Fallback: treat as unique scaffold
+            scaffold = smi  # Fallback for complex errors
         scaffolds[scaffold].append(idx)
 
-    # Randomize scaffold ordering to avoid systematic class imbalance
-    scaffold_sets = list(scaffolds.values())
-    rng.shuffle(scaffold_sets)
+    # Deterministic Sort: Sort by scaffold group size descending
+    # Then sort by scaffold string to break ties deterministically
+    scaffold_sets = sorted(
+        scaffolds.values(), 
+        key=lambda x: (len(x), smiles_list[x[0]]), 
+        reverse=True
+    )
 
     n_total = len(smiles_list)
     n_train = int(n_total * frac_train)
@@ -434,22 +372,16 @@ def scaffold_split(
         else:
             test_indices.extend(scaffold_set)
 
-    # Fallback: if any split is empty, use random split instead
+    # Validate output - no silent fallback
     if not train_indices or not val_indices or not test_indices:
-        logger.warning(
-            "Scaffold split produced empty split(s) (train=%d, val=%d, test=%d). "
-            "Falling back to random split.",
-            len(train_indices), len(val_indices), len(test_indices),
+        raise ValueError(
+            f"Strict scaffold split failed to produce three splits. "
+            f"Train={len(train_indices)}, Val={len(val_indices)}, Test={len(test_indices)}. "
+            "The dataset may be too small or contains too few unique scaffolds."
         )
-        return random_split(n_total, frac_train, frac_val, frac_test, seed)
-
-    # Shuffle within each split
-    rng.shuffle(train_indices)
-    rng.shuffle(val_indices)
-    rng.shuffle(test_indices)
 
     logger.info(
-        "Scaffold split: train=%d, val=%d, test=%d",
+        "Deterministic Scaffold split: train=%d, val=%d, test=%d",
         len(train_indices), len(val_indices), len(test_indices),
     )
 
@@ -462,8 +394,9 @@ def random_split(
     frac_val: float = 0.1,
     frac_test: float = 0.1,
     seed: int = 42,
+    **kwargs
 ) -> tuple[list[int], list[int], list[int]]:
-    """Simple random split of indices."""
+    """Standard random split with strict seed-based reproducibility."""
     rng = np.random.RandomState(seed)
     indices = rng.permutation(n).tolist()
 
@@ -474,6 +407,10 @@ def random_split(
     val_indices = indices[n_train:n_train + n_val]
     test_indices = indices[n_train + n_val:]
 
+    # Validate output
+    if not train_indices or not val_indices or not test_indices:
+        raise ValueError("Random split produced empty split(s). Dataset too small.")
+
     logger.info(
         "Random split: train=%d, val=%d, test=%d",
         len(train_indices), len(val_indices), len(test_indices),
@@ -482,12 +419,320 @@ def random_split(
     return train_indices, val_indices, test_indices
 
 
+def stratified_scaffold_split(
+    smiles_list: list[str],
+    y: np.ndarray,
+    frac_train: float = 0.8,
+    frac_val: float = 0.1,
+    frac_test: float = 0.1,
+    **kwargs
+) -> tuple[list[int], list[int], list[int]]:
+    """Balanced scaffold split for imbalanced datasets (Tox21/HIV).
+    
+    1. Group by scaffold.
+    2. Calculate positive ratio for each scaffold bucket.
+    3. Use a greedy iterative approach to place buckets into splits, 
+       maintaining the global active-label ratio across segments.
+    """
+    from collections import defaultdict
+    
+    # 1. Group by scaffold
+    scaffolds = defaultdict(list)
+    for idx, smi in enumerate(smiles_list):
+        try:
+            scaffold = generate_scaffold(smi)
+        except Exception:
+            scaffold = smi
+        scaffolds[scaffold].append(idx)
+        
+    # 2. Calculate stats for each bucket
+    # For multi-task, we use the mean positive ratio as the balancing heuristic
+    bucket_stats = []
+    global_pos_ratio = np.nanmean(y)
+    
+    for scaffold, indices in scaffolds.items():
+        bucket_y = y[indices]
+        pos_ratio = np.nanmean(bucket_y) if not np.all(np.isnan(bucket_y)) else global_pos_ratio
+        bucket_stats.append({
+            "indices": indices,
+            "pos_ratio": pos_ratio,
+            "size": len(indices)
+        })
+        
+    # Sort buckets by size descending to handle large ones first
+    bucket_stats.sort(key=lambda x: x["size"], reverse=True)
+    
+    # 3. Greedy allocation
+    train_indices, val_indices, test_indices = [], [], []
+    train_pos, val_pos, test_pos = 0.0, 0.0, 0.0
+    
+    n_total = len(smiles_list)
+    target_counts = {
+        "train": int(n_total * frac_train),
+        "val": int(n_total * frac_val),
+    }
+
+    def get_pos_count(indices):
+        bucket_y = y[indices]
+        return np.nansum(bucket_y)
+
+    for bucket in bucket_stats:
+        indices = bucket["indices"]
+        pos_count = get_pos_count(indices)
+        
+        # Calculate current ratios
+        r_train = train_pos / (len(train_indices) + 1e-6)
+        r_val = val_pos / (len(val_indices) + 1e-6)
+        r_test = test_pos / (len(test_indices) + 1e-6)
+        
+        # Where is the deficit greatest?
+        # Only consider splits that aren't full yet (except test which gets the remainder)
+        can_train = len(train_indices) < target_counts["train"]
+        can_val = len(val_indices) < target_counts["val"]
+        
+        if can_train and (not can_val or r_train <= min(r_val, r_test)):
+            train_indices.extend(indices)
+            train_pos += pos_count
+        elif can_val and (not can_train or r_val <= min(r_train, r_test)):
+            val_indices.extend(indices)
+            val_pos += pos_count
+        else:
+            test_indices.extend(indices)
+            test_pos += pos_count
+
+    logger.info(
+        "Stratified Scaffold split (Pos Ratios - Train: %.2f%%, Val: %.2f%%, Test: %.2f%%)",
+        (train_pos / len(train_indices)) * 100,
+        (val_pos / len(val_indices)) * 100,
+        (test_pos / len(test_indices)) * 100
+    )
+    
+    return train_indices, val_indices, test_indices
+
+
+def _fast_sparse_butina(fps: list, sim_cutoff: float = 0.4) -> list[list[int]]:
+    """Memory-efficient, highly optimized Butina clustering.
+    
+    Bypasses the dense O(N^2) distance matrix memory leak by using an 
+    adjacency list and utilizes RDKit's C++ BulkTanimoto for speed.
+    """
+    from rdkit import DataStructs
+    from tqdm import tqdm
+    
+    n = len(fps)
+    neighbors = [None] * n
+    
+    # 1. Build Sparse Adjacency List (Fast C++ Comparisons)
+    for i in tqdm(range(n), desc="Building Sparse Neighbors"):
+        # BulkTanimoto compares 1 fingerprint against ALL others instantly
+        sims = DataStructs.BulkTanimotoSimilarity(fps[i], fps)
+        
+        # Only store indices where similarity >= cutoff (exclude self)
+        # Using list comprehension for speed, filter only on what we need
+        neighbors[i] = [j for j, sim in enumerate(sims) if sim >= sim_cutoff and j != i]
+        
+    # 2. Sort by neighbor density (descending) 
+    # Tie-breaker: sort by index to ensure deterministic output (lower index first)
+    nodes = sorted(
+        [(len(nbrs), i) for i, nbrs in enumerate(neighbors)], 
+        key=lambda x: (x[0], -x[1]), 
+        reverse=True
+    )
+    
+    # 3. Greedy Clustering (The Butina Algorithm)
+    clusters = []
+    assigned = set()
+    
+    for _, i in nodes:
+        if i in assigned:
+            continue
+            
+        # Initialize new cluster with the centroid node
+        cluster = [i]
+        assigned.add(i)
+        
+        # Absorb unassigned neighbors
+        for nbr in neighbors[i]:
+            if nbr not in assigned:
+                cluster.append(nbr)
+                assigned.add(nbr)
+                
+        clusters.append(cluster)
+        
+    return clusters
+
+
+def butina_split(
+    smiles_list: list[str],
+    frac_train: float = 0.8,
+    frac_val: float = 0.1,
+    frac_test: float = 0.1,
+    similarity_cutoff: float = 0.4,
+    **kwargs
+) -> tuple[list[int], list[int], list[int]]:
+    """Clustering-based split using Butina algorithm (Structural Exclusion).
+    
+    Guarantees that molecules in different splits are structurally distinct.
+    """
+    from rdkit import Chem
+    from rdkit.Chem import AllChem
+    
+    logger.info("Starting Fast Butina Clustering (N=%d, cutoff=%.1f)...", len(smiles_list), similarity_cutoff)
+    
+    # 1. Compute fingerprints
+    mols = [Chem.MolFromSmiles(s) for s in smiles_list]
+    fps = [AllChem.GetMorganFingerprintAsBitVect(m, 2, nBits=2048) for m in mols]
+    
+    # 2. Parallel Neighbor Clustering
+    cluster_indices = _fast_sparse_butina(fps, similarity_cutoff)
+    
+    # Sort clusters by size descending (largest clusters are 'hubs')
+    cluster_indices.sort(key=len, reverse=True)
+    
+    # 3. Assign clusters to splits
+    train_indices, val_indices, test_indices = [], [], []
+    n_mols = len(fps)
+    n_train = int(n_mols * frac_train)
+    n_val = int(n_mols * frac_val)
+    
+    for cluster in cluster_indices:
+        if len(train_indices) + len(cluster) <= n_train:
+            train_indices.extend(cluster)
+        elif len(val_indices) + len(cluster) <= n_val:
+            val_indices.extend(cluster)
+        else:
+            test_indices.extend(cluster)
+            
+    if not train_indices or not val_indices or not test_indices:
+        raise ValueError("Butina split failed to produce three splits. Similarity cutoff might be too high.")
+            
+    logger.info(
+        "Butina split: train=%d, val=%d, test=%d (%d clusters total)",
+        len(train_indices), len(val_indices), len(test_indices), len(cluster_indices)
+    )
+    
+    return train_indices, val_indices, test_indices
+
+
+def stratified_butina_split(
+    smiles_list: list[str],
+    y: np.ndarray,
+    frac_train: float = 0.8,
+    frac_val: float = 0.1,
+    frac_test: float = 0.1,
+    similarity_cutoff: float = 0.4,
+    **kwargs
+) -> tuple[list[int], list[int], list[int]]:
+    """Master split: Structural Exclusion + Stratified Label Distribution.
+    
+    1. Clusters molecules via Butina (Tanimoto).
+    2. Calculates size and positive ratio for each cluster.
+    3. Greedily fills splits by prioritizing the bucket with the largest 
+       deficit in positive labels while respecting size quotas.
+    """
+    from rdkit import Chem, DataStructs
+    from rdkit.Chem import AllChem
+    from rdkit.ML.Cluster import Butina
+    from tqdm import tqdm
+    
+    logger.info("Starting Stratified Butina Split (N=%d, cutoff=%.1f)...", len(smiles_list), similarity_cutoff)
+    
+    # 1. Cluster Generation
+    mols = [Chem.MolFromSmiles(s) for s in smiles_list]
+    fps = [AllChem.GetMorganFingerprintAsBitVect(m, 2, nBits=2048) for m in tqdm(mols, desc="Computing Fingerprints")]
+    cluster_indices = _fast_sparse_butina(fps, similarity_cutoff)
+    
+    # 2. Cluster Profiling
+    global_pos_ratio = np.nanmean(y)
+    cluster_stats = []
+    for cluster in cluster_indices:
+        cluster_indices = list(cluster)
+        cluster_y = y[cluster_indices]
+        
+        # Calculate positive count across tasks (mean as heuristic)
+        pos_count = np.nansum(cluster_y)
+        cluster_stats.append({
+            "indices": cluster_indices,
+            "size": len(cluster_indices),
+            "pos_count": pos_count,
+            "pos_ratio": np.nanmean(cluster_y) if not np.all(np.isnan(cluster_y)) else global_pos_ratio
+        })
+        
+    # Sort clusters by size descending (largest pieces first)
+    cluster_stats.sort(key=lambda x: x["size"], reverse=True)
+    
+    # 3. Greedy allocation with deficit tracking
+    train_indices, val_indices, test_indices = [], [], []
+    train_pos, val_pos, test_pos = 0.0, 0.0, 0.0
+    
+    n_mols = len(fps)
+    target_counts = {
+        "train": int(n_mols * frac_train),
+        "val": int(n_mols * frac_val),
+    }
+
+    for cluster in tqdm(cluster_stats, desc="Allocating Clusters"):
+        indices = cluster["indices"]
+        pos_count = cluster["pos_count"]
+        size = cluster["size"]
+        
+        # Calculate size quotas (remaining capacity)
+        can_train = len(train_indices) + size <= target_counts["train"]
+        can_val = len(val_indices) + size <= target_counts["val"]
+        
+        # Deficit-based logic: which split is furthest behind its 'ideal' positive count?
+        # Ideal positive count = current_size * global_ratio
+        def get_deficit(current_size, current_pos):
+            return (current_size * global_pos_ratio) - current_pos
+
+        d_train = get_deficit(len(train_indices), train_pos)
+        d_val = get_deficit(len(val_indices), val_pos)
+        d_test = get_deficit(len(test_indices), test_pos)
+
+        # Decision:
+        # 1. If the cluster has positives, give it to the split that has the 
+        #    largest 'positive deficit' (needs them most).
+        # 2. If it's a null cluster, give it to the split that is furthest behind 
+        #    on its size quota relative to the others.
+        if pos_count > 0:
+            if can_train and (not can_val or d_train >= d_val) and d_train >= d_test:
+                train_indices.extend(indices); train_pos += pos_count
+            elif can_val and (not can_train or d_val >= d_train) and d_val >= d_test:
+                val_indices.extend(indices); val_pos += pos_count
+            else:
+                test_indices.extend(indices); test_pos += pos_count
+        else:
+            # Null cluster: balancing based on size deficit
+            s_train = target_counts["train"] - len(train_indices)
+            s_val = target_counts["val"] - len(val_indices)
+            
+            if can_train and (not can_val or s_train >= s_val):
+                train_indices.extend(indices)
+            elif can_val:
+                val_indices.extend(indices)
+            else:
+                test_indices.extend(indices)
+
+    if not train_indices or not val_indices or not test_indices:
+        raise ValueError("Stratified Butina split failed. Try lower similarity_cutoff.")
+
+    logger.info(
+        "Stratified Butina Split (Pos Ratios - Train: %.2f%%, Val: %.2f%%, Test: %.2f%%)",
+        (train_pos / len(train_indices)) * 100,
+        (val_pos / len(val_indices)) * 100,
+        (test_pos / len(test_indices)) * 100
+    )
+    
+    return train_indices, val_indices, test_indices
+
+
 # ── Full Preprocessing Pipeline ─────────────────────────────────────────
 
 def preprocess_moleculenet(
     csv_path: str | Path,
     config: dict[str, Any],
-) -> tuple[list[Data], list[int], list[int], list[int]]:
+    cache_path: str | Path | None = None,
+) -> tuple[MoleculeDataset, list[int], list[int], list[int]]:
     """Full preprocessing pipeline: load CSV → convert to graphs → split.
 
     Parameters
@@ -496,12 +741,21 @@ def preprocess_moleculenet(
         Path to a MoleculeNet CSV file.
     config : dict
         Configuration dictionary with data settings.
+    cache_path : str or Path, optional
+        Path to save/load processed data.
 
     Returns
     -------
-    (graphs, train_idx, val_idx, test_idx)
+    (dataset, train_idx, val_idx, test_idx)
     """
     from tqdm import tqdm
+
+    if cache_path is not None:
+        cache_path = Path(cache_path)
+        if cache_path.exists():
+            logger.info("Loading cached processed data from %s", cache_path)
+            # weights_only=False is safe for our internal Data objects
+            return torch.load(cache_path, weights_only=False)
 
     data_cfg = config.get("data", config)
     dataset_name = data_cfg.get("dataset_name", "bbbp").lower()
@@ -543,11 +797,16 @@ def preprocess_moleculenet(
     # 2. Parallel Processing
     n_workers = min(multiprocessing.cpu_count(), len(tasks))
     if n_workers > 1:
-        logger.info("Starting parallel graph conversion across %d cores...", n_workers)
+        logger.info("Starting parallel graph conversion across %d cores (chunksize=100)...", n_workers)
         with ProcessPoolExecutor(max_workers=n_workers) as executor:
-            futures = {executor.submit(_process_mol_row_simple, task): task for task in tasks}
-            for future in tqdm(as_completed(futures), total=len(tasks), desc="Converting SMILES"):
-                data, sm, i = future.result()
+            # chunksize=100 batches jobs for reduced IPC overhead
+            results = list(tqdm(
+                executor.map(_process_mol_row_simple, tasks, chunksize=100),
+                total=len(tasks),
+                desc="Converting SMILES"
+            ))
+            
+            for data, sm, i in results:
                 if data is not None:
                     graphs.append(data)
                     valid_smiles.append(sm)
@@ -567,19 +826,45 @@ def preprocess_moleculenet(
     )
 
     # Split
-    split_type = data_cfg.get("split_type", "scaffold")
+    split_type = data_cfg.get("split_type", "scaffold").lower()
     seed = config.get("training", {}).get("seed", 42)
     frac_train = data_cfg.get("frac_train", 0.8)
     frac_val = data_cfg.get("frac_val", 0.1)
     frac_test = data_cfg.get("frac_test", 0.1)
+    
+    # Extract labels for stratified splitting (needed for imbalance handling)
+    all_y = np.array([g.y.numpy().flatten() for g in graphs])
 
-    if split_type == "scaffold":
-        train_idx, val_idx, test_idx = scaffold_split(
-            valid_smiles, frac_train, frac_val, frac_test, seed,
-        )
-    else:
-        train_idx, val_idx, test_idx = random_split(
-            len(graphs), frac_train, frac_val, frac_test, seed,
-        )
+    split_fns = {
+        "random": random_split,
+        "scaffold": scaffold_split,
+        "stratified_scaffold": stratified_scaffold_split,
+        "butina": butina_split,
+        "stratified_butina": stratified_butina_split
+    }
+    
+    if split_type not in split_fns:
+        raise ValueError(f"Unknown split_type: {split_type}. Choices: {list(split_fns.keys())}")
+        
+    split_fn = split_fns[split_type]
+    train_idx, val_idx, test_idx = split_fn(
+        smiles_list=valid_smiles,
+        y=all_y,
+        frac_train=frac_train,
+        frac_val=frac_val,
+        frac_test=frac_test,
+        seed=seed,
+        similarity_cutoff=data_cfg.get("similarity_cutoff", 0.4)
+    )
 
-    return graphs, train_idx, val_idx, test_idx
+    # Convert to contiguous InMemoryDataset
+    dataset = MoleculeDataset(graphs)
+    output = (dataset, train_idx, val_idx, test_idx)
+
+    # Cache if path provided
+    if cache_path is not None:
+        logger.info("Saving processed data to cache: %s", cache_path)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(output, cache_path)
+
+    return output

@@ -34,22 +34,28 @@ class JointMolEmbedder(nn.Module):
         backbone: nn.Module,
         backbone_out_dim: int,
         num_datasets: int = 5,
-        dropout: float = 0.2,
+        bottleneck_dim: int = 256,
+        dropout: float = 0.3,
     ) -> None:
         super().__init__()
         self.backbone = backbone
         self.num_datasets = num_datasets
+        self.bottleneck_dim = bottleneck_dim
         self.dropout = dropout
 
-        # The Semantic Bottleneck Map Layer
-        # Compresses the high-dim graph embedding strictly down into N dimensions
-        # where N = number of datasets (chemical properties)
-        self.semantic_map_layer = nn.Sequential(
-            nn.Linear(backbone_out_dim, backbone_out_dim // 2),
+        # The High-Capacity Shared Bottleneck
+        # Projects backbone embedding to a large 256-dim latent space
+        self.semantic_bottleneck = nn.Sequential(
+            nn.Linear(backbone_out_dim, backbone_out_dim),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(backbone_out_dim // 2, num_datasets)
+            nn.Linear(backbone_out_dim, bottleneck_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout)
         )
+        
+        # Final prediction heads for each task
+        self.task_head = nn.Linear(bottleneck_dim, num_datasets)
 
     def forward(
         self,
@@ -68,13 +74,21 @@ class JointMolEmbedder(nn.Module):
             Each dimension corresponds directly to a chemical property.
         """
         # Encode graph structure via backbone
-        # We assume the backbone has an encode() method that returns node embeddings
         h_node = self.backbone.encode(x=x, edge_index=edge_index, edge_attr=edge_attr, **kwargs)
         
         # Pool to graph level (B, backbone_out_dim)
         h_graph = global_mean_pool(h_node, batch)
         
-        # Project through semantic bottleneck (B, num_datasets)
-        h_semantic = self.semantic_map_layer(h_graph)
+        # Project through high-capacity bottleneck
+        h_shared = self.semantic_bottleneck(h_graph)
+        
+        # Final prediction (B, num_datasets)
+        h_semantic = self.task_head(h_shared)
         
         return h_semantic
+
+    def re_initialize_map_layer(self, num_tasks: int, backbone_out_dim: int) -> None:
+        """Replace the prediction head for a new task count (e.g. during finetuning)."""
+        self.num_datasets = num_tasks
+        # We keep the bottleneck, but swap the final head
+        self.task_head = nn.Linear(self.bottleneck_dim, num_tasks)

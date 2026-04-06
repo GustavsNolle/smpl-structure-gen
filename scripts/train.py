@@ -12,6 +12,7 @@ import argparse
 import logging
 import sys
 from pathlib import Path
+from clearml import Task
 
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import (
@@ -125,14 +126,6 @@ def build_model(config: dict, model_name: str | None = None):
             dropout=gine_cfg.get("dropout", 0.2),
             output_dim=output_dim,
         )
-    elif name == "mlp_baseline":
-        mlp_cfg = model_cfg.get("mlp", {})
-        return MLPBaseline(
-            input_dim=node_dim,
-            hidden_dims=mlp_cfg.get("hidden_dims", [64, 32]),
-            dropout=mlp_cfg.get("dropout", 0.2),
-            output_dim=output_dim,
-        )
     else:
         raise ValueError(f"Unknown model: {name}")
 
@@ -149,7 +142,13 @@ def main() -> None:
         "--model",
         type=str,
         default=None,
-        help="Model name override (gcn, gat, egnn, rgcn, gine, mlp_baseline)",
+        help="Model name override (gcn, gat, egnn, rgcn, gine)",
+    )
+    parser.add_argument(
+        "--checkpoint",
+        type=str,
+        default=None,
+        help="Path to checkpoint to resume training from",
     )
     args = parser.parse_args()
 
@@ -157,13 +156,15 @@ def main() -> None:
     config = load_config(args.config)
     data_cfg = config["data"]
     train_cfg = config["training"]
-    log_cfg = config.get("logging", {})
+    # ── ClearML ───────────────────────────────────────────────────────
+    # Initialize ClearML task to capture TensorBoard metrics.
+    dataset_name = data_cfg.get("dataset_name", "bbbp")
+    Task.init(project_name="MoleculeNet-GCN", task_name=f"train_{dataset_name}")
 
     # ── Seed ──────────────────────────────────────────────────────────
     pl.seed_everything(train_cfg.get("seed", 42), workers=True)
 
     # ── Data ──────────────────────────────────────────────────────────
-    dataset_name = data_cfg.get("dataset_name", "bbbp")
     logger.info("Downloading dataset: %s ...", dataset_name)
     csv_path = download_moleculenet(
         dataset_name,
@@ -238,7 +239,7 @@ def main() -> None:
 
     # ── Train ─────────────────────────────────────────────────────────
     logger.info("Starting training ...")
-    trainer.fit(lit_module, datamodule=datamodule)
+    trainer.fit(lit_module, datamodule=datamodule, ckpt_path=args.checkpoint)
 
     # ── Test ──────────────────────────────────────────────────────────
     logger.info("Running test evaluation ...")
