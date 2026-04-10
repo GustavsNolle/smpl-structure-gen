@@ -3,7 +3,7 @@
 Usage:
     python scripts/experiments/train_models_separately.py
     python scripts/experiments/train_models_separately.py --config configs/default.yaml
-    python scripts/experiments/train_models_separately.py --models gcn gat mlp_baseline
+    python scripts/experiments/train_models_separately.py --models gcn mlp_baseline
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-DEFAULT_MODELS = ["gcn", "gat", "egnn", "rgcn", "mlp_baseline"]
+DEFAULT_MODELS = ["gcn", "rgcn", "mlp_baseline"]
 
 
 def run_command(cmd: list[str]) -> int:

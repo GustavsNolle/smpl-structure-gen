@@ -49,7 +49,7 @@ BENCHMARK_DATASETS = {
     "freesolv": {"task_type": "regression", "num_tasks": 1, "metric": "rmse"},
 }
 
-DL_MODEL_NAMES = ["mlp_baseline", "gcn", "gat", "gine"]
+DL_MODEL_NAMES = ["mlp_baseline", "gcn"]
 
 
 def extract_fingerprints(graphs, n_bits=2048):

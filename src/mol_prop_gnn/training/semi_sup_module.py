@@ -245,15 +245,17 @@ class JointSemiSupModule(pl.LightningModule):
         
         return total_loss
 
-    def validation_step(self, batch, batch_idx):
-        return self._shared_step(batch, "val")
+    def validation_step(self, batch, batch_idx, dataloader_idx=0):
+        stage = "val" if dataloader_idx == 0 else "test"
+        return self._shared_step(batch, stage)
 
-    def test_step(self, batch, batch_idx):
+    def test_step(self, batch, batch_idx, dataloader_idx=0):
         return self._shared_step(batch, "test")
 
     def on_validation_epoch_end(self):
         """Stable reporting of val_loss and epoch metrics."""
         self._log_epoch_metrics("val")
+        self._log_epoch_metrics("test")
 
     def _log_epoch_metrics(self, stage: str) -> dict[str, float]:
         overall_metric = 0.0
@@ -275,8 +277,8 @@ class JointSemiSupModule(pl.LightningModule):
                     log_key = f"{stage}/{ds_name} AUROC/{name}"
                     self.log(log_key, val, prog_bar=(stage != "train"), on_epoch=True, sync_dist=True)
                     
-                    if cl_logger:
-                        cl_logger.report_scalar(title=f"{stage.upper()} {ds_name} AUROC", series=name, value=val, iteration=self.current_epoch)
+                    if cl_logger and stage == "test":
+                        cl_logger.report_single_value(name=f"TEST_{ds_name}_AUROC_{name}", value=val)
                     
                     results[f"{stage}_{name}_auroc"] = val
                     overall_metric += val
@@ -293,8 +295,8 @@ class JointSemiSupModule(pl.LightningModule):
                     log_key = f"{stage}/{ds_name} RMSE/{name}"
                     self.log(log_key, val, prog_bar=(stage != "train"), on_epoch=True, sync_dist=True)
                     
-                    if cl_logger:
-                        cl_logger.report_scalar(title=f"{stage.upper()} {ds_name} RMSE", series=name, value=val, iteration=self.current_epoch)
+                    if cl_logger and stage == "test":
+                        cl_logger.report_single_value(name=f"TEST_{ds_name}_RMSE_{name}", value=val)
                     
                     results[f"{stage}_{name}_rmse"] = val
                     # We negate RMSE so that "higher is better" for model checkpointing

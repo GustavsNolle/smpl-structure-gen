@@ -32,10 +32,7 @@ from mol_prop_gnn.data.preprocessing import (
     preprocess_moleculenet,
 )
 from mol_prop_gnn.models.gcn import MolGCN
-from mol_prop_gnn.models.gat import MolGAT
-from mol_prop_gnn.models.egnn import MolEGNN
 from mol_prop_gnn.models.rgcn import MolRGCN
-from mol_prop_gnn.models.gine import MolGINE
 from mol_prop_gnn.models.mlp_baseline import MLPBaseline
 from mol_prop_gnn.training.lightning_module import MolPropertyModule
 from mol_prop_gnn.utils.config import load_config
@@ -80,29 +77,6 @@ def build_model(config: dict, model_name: str | None = None):
             dropout=gcn_cfg.get("dropout", 0.2),
             output_dim=output_dim,
         )
-    elif name == "gat":
-        gat_cfg = model_cfg.get("gat", {})
-        return MolGAT(
-            node_input_dim=node_dim,
-            edge_input_dim=edge_dim,
-            hidden_dim=gat_cfg.get("hidden_dim", 32),
-            num_gnn_layers=gat_cfg.get("num_gnn_layers", 2),
-            heads=gat_cfg.get("heads", 4),
-            decoder_hidden_dim=gat_cfg.get("decoder_hidden_dim", 64),
-            dropout=gat_cfg.get("dropout", 0.2),
-            output_dim=output_dim,
-        )
-    elif name == "egnn":
-        egnn_cfg = model_cfg.get("egnn", {})
-        return MolEGNN(
-            node_input_dim=node_dim,
-            edge_input_dim=edge_dim,
-            hidden_dim=egnn_cfg.get("hidden_dim", 64),
-            num_layers=egnn_cfg.get("num_gnn_layers", 3),
-            decoder_hidden_dim=egnn_cfg.get("decoder_hidden_dim", 64),
-            dropout=egnn_cfg.get("dropout", 0.2),
-            output_dim=output_dim,
-        )
     elif name == "rgcn":
         rgcn_cfg = model_cfg.get("rgcn", {})
         return MolRGCN(
@@ -113,17 +87,6 @@ def build_model(config: dict, model_name: str | None = None):
             num_relations=rgcn_cfg.get("num_relations", 4),
             decoder_hidden_dim=rgcn_cfg.get("decoder_hidden_dim", 64),
             dropout=rgcn_cfg.get("dropout", 0.2),
-            output_dim=output_dim,
-        )
-    elif name == "gine":
-        gine_cfg = model_cfg.get("gine", {})
-        return MolGINE(
-            node_input_dim=node_dim,
-            edge_input_dim=edge_dim,
-            hidden_dim=gine_cfg.get("hidden_dim", 64),
-            num_gnn_layers=gine_cfg.get("num_gnn_layers", 3),
-            decoder_hidden_dim=gine_cfg.get("decoder_hidden_dim", 64),
-            dropout=gine_cfg.get("dropout", 0.2),
             output_dim=output_dim,
         )
     else:
@@ -142,7 +105,7 @@ def main() -> None:
         "--model",
         type=str,
         default=None,
-        help="Model name override (gcn, gat, egnn, rgcn, gine)",
+        help="Model name override (gcn, rgcn)",
     )
     parser.add_argument(
         "--checkpoint",

@@ -23,8 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from trade_flow_gcn.data.dataset import TradeDataModule, build_graphs_from_dataframe
 from trade_flow_gcn.data.preprocessing import preprocess_pipeline
-from trade_flow_gcn.models.egnn import TradeFlowEGNN
-from trade_flow_gcn.models.gat import TradeFlowGAT
+
 from trade_flow_gcn.models.gcn import TradeFlowGCN
 from trade_flow_gcn.models.gravity_baseline import GravityBaseline
 from trade_flow_gcn.models.hybrid_gae_xgboost import HybridGAEXGBoost
@@ -90,7 +89,7 @@ def load_dl_model(model_type: str, model_class, base_dir: Path, config: dict):
 
     latest_ckpt = sorted(ckpt_files, key=lambda p: p.stat().st_mtime)[-1]
 
-    if model_type in {"gcn", "gat", "egnn", "rgcn"}:
+    if model_type in {"gcn", "rgcn"}:
         net = model_class(
             node_input_dim=len(config["data"]["node_features"]),
             edge_input_dim=len(config["data"]["edge_features"]),
@@ -158,8 +157,7 @@ def main() -> int:
     logger.info("Evaluating deep learning checkpoints...")
     models_to_test = [
         ("gcn", TradeFlowGCN),
-        ("gat", TradeFlowGAT),
-        ("egnn", TradeFlowEGNN),
+
         ("rgcn", TradeFlowRGCN),
         ("mlp_baseline", MLPBaseline),
     ]

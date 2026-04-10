@@ -14,10 +14,10 @@ import torch
 from torch_geometric.data import Batch
 from clearml import Model
 
-# Local imports
 from mol_prop_gnn.data.preprocessing import smiles_to_graph
 from mol_prop_gnn.training.semi_sup_module import JointSemiSupModule
-from mol_prop_gnn.models.factory import build_joint_model
+from mol_prop_gnn.training.causal_semi_sup_module import CausalSemiSupModule
+from mol_prop_gnn.models.factory import build_joint_model, build_causal_model
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 logger = logging.getLogger(__name__)
@@ -132,16 +132,26 @@ def load_model(checkpoint_path: str):
             "dropout": 0.3,
             "deg": None
         }
+    # Check if the checkpoint belongs to a Causal Model
+    is_causal = "sparsity_beta" in hparams
     
-    # 3. Reconstruct base model
-    model = build_joint_model(**model_config)
-    
-    # 4. Load weights into Lightning Module
-    lit_model = JointSemiSupModule.load_from_checkpoint(
-        checkpoint_path, 
-        model=model, 
-        map_location="cpu"
-    )
+    if is_causal:
+        logger.info("Detected Causal Subgraph Model...")
+        model = build_causal_model(**model_config)
+        lit_model = CausalSemiSupModule.load_from_checkpoint(
+            checkpoint_path, 
+            model=model, 
+            map_location="cpu"
+        )
+    else:
+        logger.info("Detected Standard Joint Model...")
+        model = build_joint_model(**model_config)
+        lit_model = JointSemiSupModule.load_from_checkpoint(
+            checkpoint_path, 
+            model=model, 
+            map_location="cpu"
+        )
+        
     lit_model.eval()
     return lit_model
 
@@ -181,8 +191,9 @@ def run_inference(checkpoint_path: str, smiles_list: list[str], molecule_names: 
     print("="*60)
 
     with torch.no_grad():
-        # Predictions shape: (num_molecules, num_tasks)
-        logits = model(batch)
+        out = model(batch)
+        # Handle Causal output tuple (pred_c, pred_e, mask) vs Standard output
+        logits = out[0] if isinstance(out, tuple) else out
         
         for mol_idx, mol_name in enumerate(valid_names):
             print(f"\n🔹 {mol_name}")

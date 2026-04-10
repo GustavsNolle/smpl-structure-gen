@@ -51,7 +51,7 @@ class MetricSpy(Callback):
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Large-Scale Pretraining on HIV and Tox21")
-    parser.add_argument("--model", type=str, default="gcn", choices=["gcn", "gin", "pna", "gat", "gine"], help="Backbone model")
+    parser.add_argument("--model", type=str, default="gcn", choices=["gcn", "gin", "pna"], help="Backbone model")
     parser.add_argument("--epochs", type=int, default=20, help="Number of pretraining epochs")
     parser.add_argument("--batch_size", type=int, default=1024, help="Batch size")
     parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
@@ -138,12 +138,16 @@ def main() -> None:
         accelerator="gpu",
         devices=1,
         max_epochs=args.epochs,
+        check_val_every_n_epoch=2,
         callbacks=[checkpoint_callback, MetricSpy()],
         logger=pl.loggers.TensorBoardLogger(save_dir="lightning_logs", name="pretraining"),
     )
     
     logger.info("Starting Large-Scale Pretraining Stage...")
     trainer.fit(lit_module, datamodule=datamodule)
+    
+    logger.info("Running Test Evaluation...")
+    trainer.test(lit_module, datamodule=datamodule, ckpt_path="best")
     
     logger.info("Pretraining completed. Best checkpoint: %s", checkpoint_callback.best_model_path)
     task.close()

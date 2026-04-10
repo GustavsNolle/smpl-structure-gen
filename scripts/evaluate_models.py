@@ -22,10 +22,7 @@ from mol_prop_gnn.data.preprocessing import (
 )
 from mol_prop_gnn.data.dataset import MoleculeDataModule
 from mol_prop_gnn.models.gcn import MolGCN
-from mol_prop_gnn.models.gat import MolGAT
-from mol_prop_gnn.models.egnn import MolEGNN
 from mol_prop_gnn.models.rgcn import MolRGCN
-from mol_prop_gnn.models.gine import MolGINE
 from mol_prop_gnn.models.mlp_baseline import MLPBaseline
 from mol_prop_gnn.models.rdkit_baseline import RDKitBaseline
 from mol_prop_gnn.models.xgboost_baseline import XGBoostBaseline
@@ -142,10 +139,7 @@ def main():
 
     dl_models = [
         ("gcn", MolGCN(node_input_dim=node_dim, edge_input_dim=edge_dim, output_dim=output_dim)),
-        ("gat", MolGAT(node_input_dim=node_dim, edge_input_dim=edge_dim, output_dim=output_dim)),
-        ("egnn", MolEGNN(node_input_dim=node_dim, edge_input_dim=edge_dim, output_dim=output_dim)),
         ("rgcn", MolRGCN(node_input_dim=node_dim, edge_input_dim=edge_dim, output_dim=output_dim)),
-        ("gine", MolGINE(node_input_dim=node_dim, edge_input_dim=edge_dim, output_dim=output_dim)),
         ("mlp_baseline", MLPBaseline(input_dim=node_dim, output_dim=output_dim)),
     ]
 

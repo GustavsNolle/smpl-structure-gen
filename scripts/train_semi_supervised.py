@@ -35,9 +35,6 @@ from mol_prop_gnn.training.semi_sup_module import JointSemiSupModule
 from mol_prop_gnn.models.gcn import MolGCN
 from mol_prop_gnn.models.gin import MolGIN
 from mol_prop_gnn.models.pna import MolPNA
-from mol_prop_gnn.models.gat import MolGAT
-from mol_prop_gnn.models.egnn import MolEGNN
-from mol_prop_gnn.models.gine import MolGINE
 from mol_prop_gnn.models.rgcn import MolRGCN
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
@@ -60,12 +57,6 @@ def build_backbone(name: str, node_dim: int, edge_dim: int, datamodule: Molecule
     elif name == "pna":
         deg = datamodule.get_degree_histogram()
         return MolPNA(deg=deg, node_input_dim=node_dim, edge_input_dim=edge_dim, hidden_dim=hidden_dim, num_gnn_layers=layers)
-    elif name == "gat":
-        return MolGAT(node_input_dim=node_dim, edge_input_dim=edge_dim, hidden_dim=64, heads=4, num_gnn_layers=layers)
-    elif name == "egnn":
-        return MolEGNN(node_input_dim=node_dim, edge_input_dim=edge_dim, hidden_dim=hidden_dim, num_layers=layers)
-    elif name == "gine":
-        return MolGINE(node_input_dim=node_dim, edge_input_dim=edge_dim, hidden_dim=hidden_dim, num_gnn_layers=layers)
     elif name == "rgcn":
         return MolRGCN(node_input_dim=node_dim, edge_input_dim=edge_dim, hidden_dim=hidden_dim, num_layers=layers)
     else:
@@ -74,7 +65,7 @@ def build_backbone(name: str, node_dim: int, edge_dim: int, datamodule: Molecule
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Multi-Dimensional Map Semi-Supervised Training")
-    parser.add_argument("--model", type=str, default="gcn", choices=["gcn", "gin", "pna", "gat", "egnn", "rgcn", "gine"],
+    parser.add_argument("--model", type=str, default="gcn", choices=["gcn", "gin", "pna", "rgcn"],
                         help="GNN backbone architecture (default: gcn)")
     parser.add_argument("--epochs", type=int, default=100, help="Number of training epochs")
     parser.add_argument("--batch_size", type=int, default=128, help="Batch size")
@@ -182,7 +173,8 @@ def main() -> None:
         monitor="val/loss",
         mode="min",
         save_top_k=1,
-        save_last=True
+        save_last=True,
+        every_n_epochs=10
     )
     
     # Initialize TensorBoard for ClearML to capture
@@ -195,6 +187,7 @@ def main() -> None:
         accelerator="gpu",
         devices=1,
         max_epochs=args.epochs,
+        check_val_every_n_epoch=2,
         callbacks=[checkpoint_callback],
         logger=tb_logger,
         enable_progress_bar=True,
@@ -202,7 +195,12 @@ def main() -> None:
     )
     
     logger.info("Training Constraint-Based Joint Evaluator...")
-    trainer.fit(lit_module, datamodule=datamodule, ckpt_path=args.checkpoint)
+    trainer.fit(
+        lit_module, 
+        train_dataloaders=datamodule.train_dataloader(),
+        val_dataloaders=[datamodule.val_dataloader(), datamodule.test_dataloader()],
+        ckpt_path=args.checkpoint
+    )
     
     # 4. Evaluate (try best, fallback to last)
     logger.info("Evaluating optimal bottleneck states...")

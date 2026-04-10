@@ -470,35 +470,52 @@ def stratified_scaffold_split(
     target_counts = {
         "train": int(n_total * frac_train),
         "val": int(n_total * frac_val),
+        "test": n_total - int(n_total * frac_train) - int(n_total * frac_val)
     }
 
     def get_pos_count(indices):
         bucket_y = y[indices]
         return np.nansum(bucket_y)
+        
+    def get_ratio(current_size, current_pos):
+        return current_pos / current_size if current_size > 0 else 0.0
 
     for bucket in bucket_stats:
         indices = bucket["indices"]
         pos_count = get_pos_count(indices)
+        size = len(indices)
         
-        # Calculate current ratios
-        r_train = train_pos / (len(train_indices) + 1e-6)
-        r_val = val_pos / (len(val_indices) + 1e-6)
-        r_test = test_pos / (len(test_indices) + 1e-6)
+        s_train = target_counts["train"] - len(train_indices)
+        s_val = target_counts["val"] - len(val_indices)
+        s_test = target_counts["test"] - len(test_indices)
+
+        can_train = s_train >= size
+        can_val = s_val >= size
+        can_test = s_test >= size
+
+        if not (can_train or can_val or can_test):
+            rem_space = {"train": s_train, "val": s_val, "test": s_test}
+            best_split = max(rem_space, key=rem_space.get)
+            if best_split == "train": can_train = True
+            elif best_split == "val": can_val = True
+            else: can_test = True
+
+        cands = []
+        if can_train: cands.append(("train", get_ratio(len(train_indices), train_pos), target_counts["train"]))
+        if can_val: cands.append(("val", get_ratio(len(val_indices), val_pos), target_counts["val"]))
+        if can_test: cands.append(("test", get_ratio(len(test_indices), test_pos), target_counts["test"]))
         
-        # Where is the deficit greatest?
-        # Only consider splits that aren't full yet (except test which gets the remainder)
-        can_train = len(train_indices) < target_counts["train"]
-        can_val = len(val_indices) < target_counts["val"]
-        
-        if can_train and (not can_val or r_train <= min(r_val, r_test)):
-            train_indices.extend(indices)
-            train_pos += pos_count
-        elif can_val and (not can_train or r_val <= min(r_train, r_test)):
-            val_indices.extend(indices)
-            val_pos += pos_count
+        if pos_count > 0:
+            best_split = min(cands, key=lambda x: (x[1], -x[2]))[0]
         else:
-            test_indices.extend(indices)
-            test_pos += pos_count
+            best_split = max(cands, key=lambda x: (x[1], x[2]))[0]
+
+        if best_split == "train":
+            train_indices.extend(indices); train_pos += pos_count
+        elif best_split == "val":
+            val_indices.extend(indices); val_pos += pos_count
+        else:
+            test_indices.extend(indices); test_pos += pos_count
 
     logger.info(
         "Stratified Scaffold split (Pos Ratios - Train: %.2f%%, Val: %.2f%%, Test: %.2f%%)",
@@ -669,49 +686,48 @@ def stratified_butina_split(
     target_counts = {
         "train": int(n_mols * frac_train),
         "val": int(n_mols * frac_val),
+        "test": n_mols - int(n_mols * frac_train) - int(n_mols * frac_val)
     }
+
+    def get_ratio(current_size, current_pos):
+        return current_pos / current_size if current_size > 0 else 0.0
 
     for cluster in tqdm(cluster_stats, desc="Allocating Clusters"):
         indices = cluster["indices"]
         pos_count = cluster["pos_count"]
         size = cluster["size"]
         
-        # Calculate size quotas (remaining capacity)
-        can_train = len(train_indices) + size <= target_counts["train"]
-        can_val = len(val_indices) + size <= target_counts["val"]
+        s_train = target_counts["train"] - len(train_indices)
+        s_val = target_counts["val"] - len(val_indices)
+        s_test = target_counts["test"] - len(test_indices)
+
+        can_train = s_train >= size
+        can_val = s_val >= size
+        can_test = s_test >= size
+
+        if not (can_train or can_val or can_test):
+            rem_space = {"train": s_train, "val": s_val, "test": s_test}
+            best_split = max(rem_space, key=rem_space.get)
+            if best_split == "train": can_train = True
+            elif best_split == "val": can_val = True
+            else: can_test = True
+
+        cands = []
+        if can_train: cands.append(("train", get_ratio(len(train_indices), train_pos), target_counts["train"]))
+        if can_val: cands.append(("val", get_ratio(len(val_indices), val_pos), target_counts["val"]))
+        if can_test: cands.append(("test", get_ratio(len(test_indices), test_pos), target_counts["test"]))
         
-        # Deficit-based logic: which split is furthest behind its 'ideal' positive count?
-        # Ideal positive count = current_size * global_ratio
-        def get_deficit(current_size, current_pos):
-            return (current_size * global_pos_ratio) - current_pos
-
-        d_train = get_deficit(len(train_indices), train_pos)
-        d_val = get_deficit(len(val_indices), val_pos)
-        d_test = get_deficit(len(test_indices), test_pos)
-
-        # Decision:
-        # 1. If the cluster has positives, give it to the split that has the 
-        #    largest 'positive deficit' (needs them most).
-        # 2. If it's a null cluster, give it to the split that is furthest behind 
-        #    on its size quota relative to the others.
         if pos_count > 0:
-            if can_train and (not can_val or d_train >= d_val) and d_train >= d_test:
-                train_indices.extend(indices); train_pos += pos_count
-            elif can_val and (not can_train or d_val >= d_train) and d_val >= d_test:
-                val_indices.extend(indices); val_pos += pos_count
-            else:
-                test_indices.extend(indices); test_pos += pos_count
+            best_split = min(cands, key=lambda x: (x[1], -x[2]))[0]
         else:
-            # Null cluster: balancing based on size deficit
-            s_train = target_counts["train"] - len(train_indices)
-            s_val = target_counts["val"] - len(val_indices)
-            
-            if can_train and (not can_val or s_train >= s_val):
-                train_indices.extend(indices)
-            elif can_val:
-                val_indices.extend(indices)
-            else:
-                test_indices.extend(indices)
+            best_split = max(cands, key=lambda x: (x[1], x[2]))[0]
+
+        if best_split == "train":
+            train_indices.extend(indices); train_pos += pos_count
+        elif best_split == "val":
+            val_indices.extend(indices); val_pos += pos_count
+        else:
+            test_indices.extend(indices); test_pos += pos_count
 
     if not train_indices or not val_indices or not test_indices:
         raise ValueError("Stratified Butina split failed. Try lower similarity_cutoff.")
