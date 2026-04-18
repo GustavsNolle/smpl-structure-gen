@@ -27,7 +27,7 @@ from mol_prop_gnn.data.preprocessing import (
     get_edge_feature_dim,
 )
 from mol_prop_gnn.data.dataset import MoleculeDataModule
-from mol_prop_gnn.training.lightning_module import MolPropertyModule
+from mol_prop_gnn.training.supervised_module import MolPropertyModule
 from mol_prop_gnn.models.xgboost_baseline import XGBoostBaseline
 from mol_prop_gnn.evaluation.metrics import compute_all_metrics
 from train import build_model
@@ -49,7 +49,7 @@ BENCHMARK_DATASETS = {
     "freesolv": {"task_type": "regression", "num_tasks": 1, "metric": "rmse"},
 }
 
-DL_MODEL_NAMES = ["mlp_baseline", "gcn"]
+DL_MODEL_NAMES = ["mlp_baseline", "gcn", "sage", "transformer"]
 
 
 def extract_fingerprints(graphs, n_bits=2048):
