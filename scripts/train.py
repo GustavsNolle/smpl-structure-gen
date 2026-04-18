@@ -188,7 +188,7 @@ def main() -> None:
     logger.info("Initializing trainer for model: %s", model_name)
 
     tb_logger = pl.loggers.TensorBoardLogger(
-        save_dir=log_cfg.get("save_dir", "lightning_logs"),
+        save_dir=config.get("logging", {}).get("save_dir", "lightning_logs"),
         name=model_name,
     )
 
@@ -196,7 +196,7 @@ def main() -> None:
         max_epochs=train_cfg.get("max_epochs", 100),
         callbacks=callbacks,
         logger=tb_logger,
-        log_every_n_steps=log_cfg.get("log_every_n_steps", 1),
+        log_every_n_steps=config.get("logging", {}).get("log_every_n_steps", 1),
         deterministic=True,
     )
 
