@@ -10,12 +10,13 @@ logger = logging.getLogger(__name__)
 class MolPropertyModule(pl.LightningModule):
     """Simple supervised Lightning module for a single task."""
     
-    def __init__(self, model, task_type="classification", learning_rate=1e-3, weight_decay=1e-4):
+    def __init__(self, model, task_type="classification", learning_rate=1e-3, weight_decay=1e-4, scheduler_config=None):
         super().__init__()
         self.model = model
         self.task_type = task_type
         self.learning_rate = learning_rate
         self.weight_decay = weight_decay
+        self.scheduler_config = scheduler_config or {}
         from torchmetrics import Accuracy, MeanSquaredError, MeanAbsoluteError, R2Score
         
         if task_type == "classification":
@@ -113,8 +114,13 @@ class MolPropertyModule(pl.LightningModule):
         return self._shared_step(batch, batch_idx, self.test_metric, extra, "test")
 
     def configure_optimizers(self):
-        return torch.optim.AdamW(
+        optimizer = torch.optim.AdamW(
             self.parameters(),
             lr=self.learning_rate,
             weight_decay=self.weight_decay
         )
+        if self.scheduler_config:
+            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, **self.scheduler_config)
+            return {"optimizer": optimizer, "lr_scheduler": {"scheduler": scheduler, "monitor": "val_loss"}}
+        return optimizer
+        
