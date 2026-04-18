@@ -133,7 +133,7 @@ def run_dataset_benchmark(base_config, dataset_name, dataset_info):
     X_val, y_val = extract_fingerprints(dm.val_dataset)
     X_test, y_test = extract_fingerprints(dm.test_dataset)
 
-    xgb = XGBoostBaseline(task_type=task_type, n_estimators=200, early_stopping_rounds=10)
+    xgb = XGBoostBaseline(task_type=task_type, n_estimators=200)
     eval_set = [(X_val, y_val)] if len(X_val) > 0 else None
     xgb.fit(X_train, y_train, eval_set=eval_set)
     xgb_metrics = xgb.evaluate(X_test, y_test)
