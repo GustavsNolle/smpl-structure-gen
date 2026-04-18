@@ -12,6 +12,8 @@ import torch.nn as nn
 from mol_prop_gnn.models.gcn import MolGCN
 from mol_prop_gnn.models.gin import MolGIN
 from mol_prop_gnn.models.pna import MolPNA
+from mol_prop_gnn.models.sage import MolGraphSAGE
+from mol_prop_gnn.models.transformer import MolTransformerGNN
 from mol_prop_gnn.models.joint_embedder import JointMolEmbedder
 from mol_prop_gnn.models.causal_embedder import CausalMolEmbedder
 
@@ -35,6 +37,10 @@ def build_backbone(
         if deg is None:
             raise ValueError("PNA backbone requires degree histogram 'deg'")
         return MolPNA(deg=deg, node_input_dim=node_dim, edge_input_dim=edge_dim, hidden_dim=hidden_dim, num_gnn_layers=layers)
+    elif name == "sage":
+        return MolGraphSAGE(node_input_dim=node_dim, edge_input_dim=edge_dim, hidden_dim=hidden_dim, num_layers=layers)
+    elif name == "transformer":
+        return MolTransformerGNN(node_input_dim=node_dim, edge_input_dim=edge_dim, hidden_dim=hidden_dim, num_gnn_layers=layers)
     else:
         raise ValueError(f"Unknown backbone: {name}")
 
