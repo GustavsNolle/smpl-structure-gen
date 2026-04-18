@@ -47,12 +47,12 @@ class MolGraphSAGE(nn.Module):
 
         # First layer: input_dim -> hidden_dim
         self.convs.append(SAGEConv(node_input_dim, hidden_dim))
-        self.norms.append(nn.BatchNorm1d(hidden_dim))
+        self.norms.append(nn.LayerNorm(hidden_dim))
 
         # Hidden layers
         for _ in range(num_layers - 1):
             self.convs.append(SAGEConv(hidden_dim, hidden_dim))
-            self.norms.append(nn.BatchNorm1d(hidden_dim))
+            self.norms.append(nn.LayerNorm(hidden_dim))
 
         self.dropout = dropout
 
