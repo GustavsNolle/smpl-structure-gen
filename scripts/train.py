@@ -34,7 +34,7 @@ from mol_prop_gnn.data.preprocessing import (
 from mol_prop_gnn.models.gcn import MolGCN
 from mol_prop_gnn.models.rgcn import MolRGCN
 from mol_prop_gnn.models.mlp_baseline import MLPBaseline
-from mol_prop_gnn.training.lightning_module import MolPropertyModule
+from mol_prop_gnn.training.supervised_module import MolPropertyModule
 from mol_prop_gnn.utils.config import load_config
 
 logging.basicConfig(
