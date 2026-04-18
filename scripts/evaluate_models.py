@@ -148,7 +148,7 @@ def main():
     ]
 
     for m_name, net in dl_models:
-        ckpt_files = list(log_dir.glob(f"{m_name}/**/checkpoints/*.ckpt"))
+        ckpt_files = list(log_dir.glob(f"semi_supervised_{m_name}/**/checkpoints/*.ckpt"))
         if not ckpt_files:
             logger.warning("No checkpoint for %s, skipping.", m_name)
             continue
