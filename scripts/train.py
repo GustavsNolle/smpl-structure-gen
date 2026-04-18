@@ -89,6 +89,31 @@ def build_model(config: dict, model_name: str | None = None):
             dropout=rgcn_cfg.get("dropout", 0.2),
             output_dim=output_dim,
         )
+    elif name == "sage":
+        from mol_prop_gnn.models.sage import MolGraphSAGE
+        sage_cfg = model_cfg.get("sage", {})
+        return MolGraphSAGE(
+            node_input_dim=node_dim,
+            edge_input_dim=edge_dim,
+            hidden_dim=sage_cfg.get("hidden_dim", 128),
+            num_layers=sage_cfg.get("num_layers", 3),
+            decoder_hidden_dim=sage_cfg.get("decoder_hidden_dim", 64),
+            dropout=sage_cfg.get("dropout", 0.2),
+            output_dim=output_dim,
+        )
+    elif name == "transformer":
+        from mol_prop_gnn.models.transformer import MolTransformerGNN
+        trans_cfg = model_cfg.get("transformer", {})
+        return MolTransformerGNN(
+            node_input_dim=node_dim,
+            edge_input_dim=edge_dim,
+            hidden_dim=trans_cfg.get("hidden_dim", 128),
+            num_gnn_layers=trans_cfg.get("num_gnn_layers", 3),
+            num_attention_heads=trans_cfg.get("num_attention_heads", 8),
+            decoder_hidden_dim=trans_cfg.get("decoder_hidden_dim", 64),
+            dropout=trans_cfg.get("dropout", 0.2),
+            output_dim=output_dim,
+        )
     else:
         raise ValueError(f"Unknown model: {name}")
 
@@ -105,7 +130,7 @@ def main() -> None:
         "--model",
         type=str,
         default=None,
-        help="Model name override (gcn, rgcn)",
+        help="Model name override (gcn, rgcn, sage, transformer)",
     )
     parser.add_argument(
         "--checkpoint",
