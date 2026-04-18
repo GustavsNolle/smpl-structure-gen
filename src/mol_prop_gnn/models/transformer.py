@@ -99,6 +99,10 @@ class MolTransformerGNN(nn.Module):
             nn.Linear(decoder_hidden_dim, output_dim),
         )
 
+    @property
+    def out_channels(self) -> int:
+        return self.hidden_dim
+
     def encode(self, x, edge_index, edge_attr):
         for block in self.blocks:
             x = block(x, edge_index, edge_attr)
