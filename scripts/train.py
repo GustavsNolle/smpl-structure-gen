@@ -114,6 +114,14 @@ def build_model(config: dict, model_name: str | None = None):
             dropout=trans_cfg.get("dropout", 0.2),
             output_dim=output_dim,
         )
+    elif name == "mlp_baseline":
+        mlp_cfg = model_cfg.get("mlp", {})
+        return MLPBaseline(
+            input_dim=node_dim,
+            hidden_dims=mlp_cfg.get("hidden_dims", [64, 32]),
+            dropout=mlp_cfg.get("dropout", 0.2),
+            output_dim=output_dim,
+        )
     else:
         raise ValueError(f"Unknown model: {name}")
 
@@ -130,7 +138,7 @@ def main() -> None:
         "--model",
         type=str,
         default=None,
-        help="Model name override (gcn, rgcn, sage, transformer)",
+        help="Model name override (gcn, rgcn, sage, transformer, mlp_baseline)",,
     )
     parser.add_argument(
         "--checkpoint",
