@@ -108,7 +108,8 @@ def main() -> None:
     
     node_dim = get_node_feature_dim()
     edge_dim = get_edge_feature_dim()
-    
+
+    model_config = None
     if args.model == "mlp_baseline":
         from mol_prop_gnn.models.mlp_baseline import MLPBaseline
         model = MLPBaseline(
@@ -152,16 +153,27 @@ def main() -> None:
         logger.info("Transfer learning initiated: Backbone weights loaded.")
     
     # 2. Setup Lightning Module
-    lit_module = JointSemiSupModule(
-        model=model,
-        task_types=task_types,
-        dataset_names=target_names,
-        learning_rate=args.lr,
-        ortho_beta=args.ortho_beta,
-        contrastive_beta=args.contrastive_beta,
-        target_to_ds=target_to_ds,
-        model_config=model_config
-    )
+    if model_config is not None:
+        lit_module = JointSemiSupModule(
+            model=model,
+            task_types=task_types,
+            dataset_names=target_names,
+            learning_rate=args.lr,
+            ortho_beta=args.ortho_beta,
+            contrastive_beta=args.contrastive_beta,
+            target_to_ds=target_to_ds,
+            model_config=model_config
+        )
+    else:
+        lit_module = JointSemiSupModule(
+            model=model,
+            task_types=task_types,
+            dataset_names=target_names,
+            learning_rate=args.lr,
+            ortho_beta=args.ortho_beta,
+            contrastive_beta=args.contrastive_beta,
+            target_to_ds=target_to_ds
+        )
     
     checkpoint_callback = ModelCheckpoint(
         monitor="val/loss",
