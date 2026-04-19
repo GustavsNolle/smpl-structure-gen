@@ -49,6 +49,7 @@ class MolPropertyModule(pl.LightningModule):
                 edge_index=batch.edge_index,
                 edge_attr=getattr(batch, 'edge_attr', None),
                 batch=batch.batch,
+                global_features=getattr(batch, 'global_features', None),
             )
         else:
             # Fallback for tabular features if ever used directly in this module
@@ -99,14 +100,17 @@ class MolPropertyModule(pl.LightningModule):
             extra = None  # We didn't initialize train_mae / train_r2
         return self._shared_step(batch, batch_idx, self.train_metric, extra, "train")
 
-    def validation_step(self, batch, batch_idx):
+    def validation_step(self, batch, batch_idx, dataloader_idx=0):
+        stage = "val" if dataloader_idx == 0 else "test"
         if self.task_type == "classification":
-            extra = getattr(self, "val_acc", None)
+            extra = getattr(self, f"{stage}_acc", None)
+            metric = getattr(self, f"{stage}_metric")
         else:
-            extra = (getattr(self, "val_mae"), getattr(self, "val_r2"))
-        return self._shared_step(batch, batch_idx, self.val_metric, extra, "val")
+            extra = (getattr(self, f"{stage}_mae"), getattr(self, f"{stage}_r2"))
+            metric = getattr(self, f"{stage}_metric")
+        return self._shared_step(batch, batch_idx, metric, extra, stage)
 
-    def test_step(self, batch, batch_idx):
+    def test_step(self, batch, batch_idx, dataloader_idx=0):
         if self.task_type == "classification":
             extra = getattr(self, "test_acc", None)
         else:

@@ -1,0 +1,40 @@
+# ─────────────────────────────────────────────────────────────────────
+# Phase 1: Self-Supervised Pre-training — Continuous Masked Node Prediction
+# ─────────────────────────────────────────────────────────────────────
+# Trains MolGINE encoder to predict masked 38-dim RDKit features.
+# Highly recommended over discrete/PyG integer tokens to ensure exact
+# architecture match (no nn.Linear vs nn.Embedding crash) in Phase 2.
+#
+# Usage:
+#   python scripts/train_pretrain_masked.py --config configs/pretrain_masked.yaml
+# ─────────────────────────────────────────────────────────────────────
+
+# ── Dataset ───────────────────────────────────────────────────────────
+data:
+  root: "data/ZINC"
+
+# ── Masking ───────────────────────────────────────────────────────────
+masking:
+  mask_rate: 0.15
+
+# ── Model ─────────────────────────────────────────────────────────────
+model:
+  hidden_dim: 256
+  num_gnn_layers: 5
+  dropout: 0.3
+
+# ── Training ──────────────────────────────────────────────────────────
+training:
+  seed: 42
+  epochs: 100
+  batch_size: 128     # NOTE: Halved from 256. GINE + JK + VN is memory hungry!
+  learning_rate: 0.001
+  weight_decay: 0.00001
+  scheduler:
+    patience: 10
+    factor: 0.5
+
+# ── Infrastructure ────────────────────────────────────────────────────
+num_workers: 4
+accelerator: auto
+checkpoint_dir: "checkpoints/pretrain_masked"

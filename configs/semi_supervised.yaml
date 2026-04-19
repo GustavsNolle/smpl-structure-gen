@@ -11,15 +11,15 @@
 
 # GNN backbone architecture (gcn, gin, pna, rgcn)
 model: gin
-hidden_dim: 64
+hidden_dim: 128
 num_layers: 3
 
 # Training hyperparameters
-epochs: 30
+epochs: 100
 batch_size: 128
 lr: 0.001
 dropout: 0.2
-bottleneck_dim: 64
+bottleneck_dim: 128
 
 # Loss weights
 ortho_beta: 0.01        # Disentanglement constraint weight

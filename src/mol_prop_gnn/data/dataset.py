@@ -93,11 +93,20 @@ class MoleculeDataModule(pl.LightningDataModule):
             ("test", self.test_dataset),
         ]:
             if dataset:
-                labels = torch.cat([g.y for g in dataset]).numpy().flatten()
-                valid = labels[~__import__("numpy").isnan(labels)]
-                unique, counts = __import__("numpy").unique(valid, return_counts=True)
-                dist = {f"{int(u)}": int(c) for u, c in zip(unique, counts)}
-                logger.info("  %s class dist: %s (n=%d)", name, dist, len(valid))
+                all_y = torch.cat([g.y for g in dataset]).numpy()
+                num_tasks = all_y.shape[1]
+                
+                if num_tasks == 1:
+                    labels = all_y.flatten()
+                    valid = labels[~__import__("numpy").isnan(labels)]
+                    unique, counts = __import__("numpy").unique(valid, return_counts=True)
+                    dist = {f"{int(u)}": int(c) for u, c in zip(unique, counts)}
+                    logger.info("  %s class dist: %s (n=%d)", name, dist, len(valid))
+                else:
+                    # For multi-task, log a summary of total labeled data points
+                    valid_mask = ~__import__("numpy").isnan(all_y)
+                    total_labeled = valid_mask.sum()
+                    logger.info("  %s: %d total labeled data points across %d tasks", name, total_labeled, num_tasks)
 
         # 1. Compute Balanced Weights for Training Set
         if self.use_balanced_sampler and self.train_dataset:
@@ -131,6 +140,7 @@ class MoleculeDataModule(pl.LightningDataModule):
             num_workers=self.num_workers,
             pin_memory=True,
             persistent_workers=(self.num_workers > 0),
+            drop_last=True,
         )
 
     def val_dataloader(self):

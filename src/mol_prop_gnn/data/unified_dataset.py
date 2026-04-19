@@ -65,6 +65,7 @@ def build_unified_dataframe(
         Ordered list of task types ('classification' or 'regression') for each target.
     """
     dataset_names = dataset_names or DEFAULT_DATASETS
+    dataset_names = sorted(list(dataset_names)) # Ensure deterministic column order
     raw_dir = Path(raw_dir)
     merged_df = None
     scaling_stats = {}
@@ -156,7 +157,19 @@ def preprocess_unified_dataset(
         if cache_path.exists():
             logger.info("Loading cached unified dataset from %s", cache_path)
             # weights_only=False is safe for our internal objects
-            return torch.load(cache_path, weights_only=False)
+            cached_data = torch.load(cache_path, weights_only=False)
+            
+            # Version 2 cache format includes metadata
+            if isinstance(cached_data, dict) and "target_names" in cached_data:
+                # Check for strict target name alignment
+                if cached_data["target_names"] == target_names:
+                    logger.info("Cache metadata verified (target names match).")
+                    return cached_data["output"]
+                else:
+                    logger.warning("Cache mismatch! Target order in cache differs from requested. Ignoring cache.")
+            else:
+                # Fallback for old cache format: load but warn
+                logger.warning("Old cache format detected (pre-metadata). Re-building to ensure label alignment.")
 
     graphs = []
     valid_smiles = []
@@ -245,8 +258,14 @@ def preprocess_unified_dataset(
     # Save to cache if enabled
     if cache_dir is not None:
         cache_dir.mkdir(parents=True, exist_ok=True)
-        logger.info("Saving processed unified dataset to cache: %s", cache_path)
-        torch.save(output, cache_path)
+        logger.info("Saving processed unified dataset to cache (with metadata): %s", cache_path)
+        # Store metadata to prevent label-shift bugs on future runs
+        cache_dict = {
+            "output": output,
+            "target_names": target_names,
+            "version": 2
+        }
+        torch.save(cache_dict, cache_path)
     
     return output
 

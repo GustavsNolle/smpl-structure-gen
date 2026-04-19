@@ -176,7 +176,7 @@ def main() -> None:
         )
     
     checkpoint_callback = ModelCheckpoint(
-        monitor="val/loss",
+        monitor="val_loss",
         mode="min",
         save_top_k=1,
         save_last=True,
@@ -204,7 +204,7 @@ def main() -> None:
     trainer.fit(
         lit_module, 
         train_dataloaders=datamodule.train_dataloader(),
-        val_dataloaders=datamodule.val_dataloader(),
+        val_dataloaders=[datamodule.val_dataloader(), datamodule.test_dataloader()],
         ckpt_path=args.checkpoint
     )
     

@@ -17,6 +17,9 @@ env/
 data/raw/
 data/processed/
 data/external/
+data/ZINC/raw/
+data/ZINC/processed/
+data/ZINC/subset/
 *.csv
 *.csv.gz
 *.sdf

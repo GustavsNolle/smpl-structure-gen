@@ -190,7 +190,7 @@ def main():
             )
             
             trainer = pl.Trainer(accelerator="auto", devices=1, max_epochs=epochs, logger=False, enable_progress_bar=False)
-            trainer.fit(vanilla_module, datamodule=dm)
+            trainer.fit(vanilla_module, train_dataloaders=dm.train_dataloader(), val_dataloaders=[dm.val_dataloader(), dm.test_dataloader()])
             res = evaluate_torch_model(vanilla_module, dm, task_type)
             results.append({"Dataset": ds_name.upper(), "Type": "VANILLA", "Model": bb_name.upper(), **res})
             
@@ -216,7 +216,7 @@ def main():
             )
             
             trainer = pl.Trainer(accelerator="auto", devices=1, max_epochs=epochs, logger=False, enable_progress_bar=False)
-            trainer.fit(causal_module, datamodule=dm)
+            trainer.fit(causal_module, train_dataloaders=dm.train_dataloader(), val_dataloaders=[dm.val_dataloader(), dm.test_dataloader()])
             res = evaluate_torch_model(causal_module, dm, task_type)
             results.append({"Dataset": ds_name.upper(), "Type": "CAUSAL", "Model": bb_name.upper(), **res})
 

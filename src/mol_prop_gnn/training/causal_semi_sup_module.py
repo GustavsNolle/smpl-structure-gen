@@ -268,9 +268,10 @@ class CausalSemiSupModule(pl.LightningModule):
             avg_score = overall_metric / num_valid
             self.log(f"{stage}/overall_c_score", avg_score, prog_bar=True, sync_dist=True)
             self.log(f"{stage}_overall_c_score", avg_score, sync_dist=True)
-            # Route target to val_loss for checkpoint callback matching
+            
+            # Route target to val_loss for checkpoint callback matching, avoiding idx suffix
             if stage == "val":
-                self.log(f"val_loss", -avg_score, prog_bar=False, sync_dist=True)
+                self.log(f"val_loss", -avg_score, prog_bar=False, sync_dist=True, add_dataloader_idx=False)
                 
             results[f"{stage}_overall_score"] = avg_score
             

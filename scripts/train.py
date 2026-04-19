@@ -114,6 +114,28 @@ def build_model(config: dict, model_name: str | None = None):
             dropout=trans_cfg.get("dropout", 0.2),
             output_dim=output_dim,
         )
+    elif name == "gin":
+        from mol_prop_gnn.models.gin import MolGIN
+        gin_cfg = model_cfg.get("gin", {})
+        return MolGIN(
+            node_input_dim=node_dim,
+            hidden_dim=gin_cfg.get("hidden_dim", 256),
+            num_gnn_layers=gin_cfg.get("num_gnn_layers", 5),
+            dropout=gin_cfg.get("dropout", 0.3),
+            output_dim=output_dim,
+        )
+    elif name == "gine":
+        from mol_prop_gnn.models.gine import MolGINE
+        gine_cfg = model_cfg.get("gine", {})
+        return MolGINE(
+            node_input_dim=node_dim,
+            edge_input_dim=edge_dim,
+            hidden_dim=gine_cfg.get("hidden_dim", 256),
+            num_gnn_layers=gine_cfg.get("num_gnn_layers", 5),
+            decoder_hidden_dim=gine_cfg.get("decoder_hidden_dim", 64),
+            dropout=gine_cfg.get("dropout", 0.3),
+            output_dim=output_dim,
+        )
     elif name == "mlp_baseline":
         mlp_cfg = model_cfg.get("mlp", {})
         return MLPBaseline(

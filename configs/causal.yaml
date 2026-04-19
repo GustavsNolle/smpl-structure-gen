@@ -9,20 +9,20 @@
 #   uv run python scripts/train_causal.py --config configs/causal.yaml --model pna
 
 # GNN backbone architecture (gcn, gin, pna, rgcn)
-model: gcn
-hidden_dim: 256
-num_layers: 5
+model: gin
+hidden_dim: 128
+num_layers: 3
 
 # Training hyperparameters
 epochs: 100
 batch_size: 128
 lr: 0.001
-dropout: 0.3
-bottleneck_dim: 256
+dropout: 0.2
+bottleneck_dim: 128
 
 # Causal loss weights
-sparsity_beta: 1.0   # Information bottleneck — forces minimal causal subgraph
-env_beta: 0.5        # Environment penalty — penalizes spurious scaffold correlations
+sparsity_beta: 0.05   # Information bottleneck — forces minimal causal subgraph
+env_beta: 0.25        # Environment penalty — penalizes spurious scaffold correlations
 
 # Data
 datasets:

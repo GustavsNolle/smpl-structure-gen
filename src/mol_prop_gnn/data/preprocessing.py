@@ -191,6 +191,13 @@ def smiles_to_graph(
     data.smiles = raw["smiles"]
     if raw["y"] is not None:
         data.y = torch.from_numpy(raw["y"]).unsqueeze(0)
+
+    # Global molecular descriptors for models that use them (e.g., GINE)
+    desc = compute_descriptors(smiles)
+    if desc is not None:
+        data.global_features = torch.from_numpy(desc).unsqueeze(0)  # (1, 10)
+    else:
+        data.global_features = torch.zeros(1, 10, dtype=torch.float32)
     
     return data
 

@@ -49,7 +49,7 @@ BENCHMARK_DATASETS = {
     "freesolv": {"task_type": "regression", "num_tasks": 1, "metric": "rmse"},
 }
 
-DL_MODEL_NAMES = ["mlp_baseline", "gcn", "sage", "transformer"]
+DL_MODEL_NAMES = ["gin", "gine"]
 
 
 def extract_fingerprints(graphs, n_bits=2048):
@@ -109,6 +109,11 @@ def run_dataset_benchmark(base_config, dataset_name, dataset_info):
     config["training"]["max_epochs"] = 10
     config["training"]["batch_size"] = 64
 
+    # Use stratified scaffold split for classification to ensure both classes
+    # appear in the test set (fixes AUROC=0.0 on imbalanced datasets like BBBP)
+    if dataset_info["task_type"] == "classification":
+        config["data"]["split_type"] = "stratified_scaffold"
+
     task_type = dataset_info["task_type"]
     metric_key = dataset_info["metric"]
 
@@ -122,6 +127,7 @@ def run_dataset_benchmark(base_config, dataset_name, dataset_info):
         val_idx=val_idx,
         test_idx=test_idx,
         batch_size=32,
+        num_workers=0,
     )
     dm.setup()
 

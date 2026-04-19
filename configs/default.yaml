@@ -72,10 +72,21 @@ model:
     decoder_hidden_dim: 64
     dropout: 0.2
 
+  gin:
+    hidden_dim: 32
+    num_gnn_layers: 3
+    dropout: 0.2
+
+  gine:
+    hidden_dim: 32
+    num_gnn_layers: 3
+    decoder_hidden_dim: 32
+    dropout: 0.2
+
 # ── Training ──────────────────────────────────────────────────────────
 training:
   seed: 42
-  max_epochs: 100
+  max_epochs: 10
   batch_size: 32
   learning_rate: 0.001
   weight_decay: 0.0001

@@ -10,7 +10,7 @@ import pytorch_lightning as pl
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torchmetrics import Accuracy, MeanSquaredError
+from torchmetrics import Accuracy, MeanSquaredError, MeanAbsoluteError, R2Score
 from torchmetrics.classification import BinaryAUROC
 from clearml import Task
 
@@ -67,9 +67,21 @@ class JointSemiSupModule(pl.LightningModule):
         self.val_auroc = nn.ModuleList([BinaryAUROC() if tt == "classification" else None for tt in task_types])
         self.test_auroc = nn.ModuleList([BinaryAUROC() if tt == "classification" else None for tt in task_types])
         
+        self.train_acc = nn.ModuleList([Accuracy(task="binary") if tt == "classification" else None for tt in task_types])
+        self.val_acc = nn.ModuleList([Accuracy(task="binary") if tt == "classification" else None for tt in task_types])
+        self.test_acc = nn.ModuleList([Accuracy(task="binary") if tt == "classification" else None for tt in task_types])
+
         self.train_rmse = nn.ModuleList([MeanSquaredError(squared=False) if tt == "regression" else None for tt in task_types])
         self.val_rmse = nn.ModuleList([MeanSquaredError(squared=False) if tt == "regression" else None for tt in task_types])
         self.test_rmse = nn.ModuleList([MeanSquaredError(squared=False) if tt == "regression" else None for tt in task_types])
+
+        self.train_mae = nn.ModuleList([MeanAbsoluteError() if tt == "regression" else None for tt in task_types])
+        self.val_mae = nn.ModuleList([MeanAbsoluteError() if tt == "regression" else None for tt in task_types])
+        self.test_mae = nn.ModuleList([MeanAbsoluteError() if tt == "regression" else None for tt in task_types])
+
+        self.train_r2 = nn.ModuleList([R2Score() if tt == "regression" else None for tt in task_types])
+        self.val_r2 = nn.ModuleList([R2Score() if tt == "regression" else None for tt in task_types])
+        self.test_r2 = nn.ModuleList([R2Score() if tt == "regression" else None for tt in task_types])
         
         # Learnable noise parameters for Uncertainty Weighting
         # Initialized at 0.0, which corresponds to weighing each loss by exp(-0) = 1.0
@@ -160,10 +172,13 @@ class JointSemiSupModule(pl.LightningModule):
                 # Update metrics
                 if stage == "train":
                     self.train_auroc[i](valid_pred, valid_target.long())
+                    self.train_acc[i](valid_pred, valid_target.long())
                 elif stage == "val":
                     self.val_auroc[i](valid_pred, valid_target.long())
+                    self.val_acc[i](valid_pred, valid_target.long())
                 elif stage == "test":
                     self.test_auroc[i](valid_pred, valid_target.long())
+                    self.test_acc[i](valid_pred, valid_target.long())
                     
             elif tt == "regression":
                 l = self.mse_loss(valid_pred, valid_target)
@@ -172,10 +187,16 @@ class JointSemiSupModule(pl.LightningModule):
                 losses.append(l.item())
                 if stage == "train":
                     self.train_rmse[i](valid_pred, valid_target)
+                    self.train_mae[i](valid_pred, valid_target)
+                    self.train_r2[i].update(valid_pred, valid_target)
                 elif stage == "val":
                     self.val_rmse[i](valid_pred, valid_target)
+                    self.val_mae[i](valid_pred, valid_target)
+                    self.val_r2[i].update(valid_pred, valid_target)
                 elif stage == "test":
                     self.test_rmse[i](valid_pred, valid_target)
+                    self.test_mae[i](valid_pred, valid_target)
+                    self.test_r2[i].update(valid_pred, valid_target)
 
         # 2. Constraint / Disentanglement Loss
         d_loss = self._compute_disentanglement_loss(pred)
@@ -254,6 +275,8 @@ class JointSemiSupModule(pl.LightningModule):
 
     def on_validation_epoch_end(self):
         """Stable reporting of val_loss and epoch metrics."""
+        # This will call _log_epoch_metrics with stage="val" and "test"
+        # stage="test" only updates if dataloader_idx 1 was processed
         self._log_epoch_metrics("val")
         self._log_epoch_metrics("test")
 
@@ -271,45 +294,68 @@ class JointSemiSupModule(pl.LightningModule):
                 metric_obj = getattr(self, f"{stage}_auroc")[i]
                 try:
                     val = metric_obj.compute().item()
+                    acc_val = getattr(self, f"{stage}_acc")[i].compute().item()
                     ds_name = self.target_to_ds.get(name, "unknown").upper()
+                    
                     # Grouping: stage / [Dataset] [MetricType] / [Target]
-                    # ClearML will create a plot named "[Dataset] AUROC" with series "[Target]"
                     log_key = f"{stage}/{ds_name} AUROC/{name}"
                     self.log(log_key, val, prog_bar=(stage != "train"), on_epoch=True, sync_dist=True)
+                    self.log(f"{stage}/{ds_name} ACC/{name}", acc_val, on_epoch=True, sync_dist=True)
                     
                     if cl_logger and stage == "test":
                         cl_logger.report_single_value(name=f"TEST_{ds_name}_AUROC_{name}", value=val)
+                        cl_logger.report_single_value(name=f"TEST_{ds_name}_ACC_{name}", value=acc_val)
                     
                     results[f"{stage}_{name}_auroc"] = val
+                    results[f"{stage}_{name}_acc"] = acc_val
                     overall_metric += val
                     num_valid += 1
-                except ValueError:
+                except (ValueError, RuntimeError):
                     pass
                 metric_obj.reset()
+                getattr(self, f"{stage}_acc")[i].reset()
             else:
                 metric_obj = getattr(self, f"{stage}_rmse")[i]
+                mae_obj = getattr(self, f"{stage}_mae")[i]
+                r2_obj = getattr(self, f"{stage}_r2")[i]
                 try:
                     val = metric_obj.compute().item()
+                    mae_val = mae_obj.compute().item()
+                    r2_val = r2_obj.compute().item()
+                    
                     ds_name = self.target_to_ds.get(name, "unknown").upper()
                     # Grouping: stage / [Dataset] [MetricType] / [Target]
                     log_key = f"{stage}/{ds_name} RMSE/{name}"
                     self.log(log_key, val, prog_bar=(stage != "train"), on_epoch=True, sync_dist=True)
+                    self.log(f"{stage}/{ds_name} MAE/{name}", mae_val, on_epoch=True, sync_dist=True)
+                    self.log(f"{stage}/{ds_name} R2/{name}", r2_val, on_epoch=True, sync_dist=True)
                     
                     if cl_logger and stage == "test":
                         cl_logger.report_single_value(name=f"TEST_{ds_name}_RMSE_{name}", value=val)
+                        cl_logger.report_single_value(name=f"TEST_{ds_name}_MAE_{name}", value=mae_val)
+                        cl_logger.report_single_value(name=f"TEST_{ds_name}_R2_{name}", value=r2_val)
                     
                     results[f"{stage}_{name}_rmse"] = val
+                    results[f"{stage}_{name}_mae"] = mae_val
+                    results[f"{stage}_{name}_r2"] = r2_val
                     # We negate RMSE so that "higher is better" for model checkpointing
                     overall_metric += -val 
                     num_valid += 1
-                except ValueError:
+                except (ValueError, RuntimeError):
                     pass
                 metric_obj.reset()
+                mae_obj.reset()
+                r2_obj.reset()
 
         if num_valid > 0:
             avg_score = overall_metric / num_valid
             self.log(f"{stage}/overall_score", avg_score, prog_bar=True, on_epoch=True, sync_dist=True)
             self.log(f"{stage}_overall_score", avg_score, on_epoch=True, sync_dist=True)
+            
+            # Manual log for checkpoint stability regardless of dataloader indexing
+            if stage == "val":
+                self.log("val_loss", -avg_score, on_epoch=True, sync_dist=True, add_dataloader_idx=False)
+                
             results[f"{stage}_overall_score"] = avg_score
             
         return results
