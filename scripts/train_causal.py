@@ -38,7 +38,7 @@ torch.set_float32_matmul_precision('medium')
 def main() -> None:
     parser = argparse.ArgumentParser(description="Map Semi-Supervised Training via Graph Causal Learning")
     parser.add_argument("--config", type=str, default=None, help="Path to YAML config file (CLI args override config values)")
-    parser.add_argument("--model", type=str, default="gcn", choices=["gcn", "gin", "pna", "rgcn"],
+    parser.add_argument("--model", type=str, default="gcn", choices=["gcn", "gin", "pna", "rgcn", "hybrid_causal"],
                         help="GNN backbone architecture (default: gcn)")
     parser.add_argument("--hidden_dim", type=int, default=256, help="Hidden dimension for GNN backbone")
     parser.add_argument("--num_layers", type=int, default=5, help="Number of GNN message-passing layers")
