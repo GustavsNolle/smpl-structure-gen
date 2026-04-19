@@ -44,7 +44,7 @@ class CausalContrastiveUncertaintyEmbedder(nn.Module):
         
     def forward(self, x, edge_index, edge_attr, batch, **kwargs):
         # Encode
-        h_node = self.backbone.encode(x=x, edge_index=edge_index, edge_attr=edge_attr, **kwargs)
+        h_node = self.backbone.encode(x=x, edge_index=edge_index, edge_attr=edge_attr, batch=batch, **kwargs)
         
         # Causal mask
         mask_logits = self.extractor(h_node)

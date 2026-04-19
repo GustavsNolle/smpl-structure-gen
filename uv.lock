@@ -2245,6 +2245,7 @@ requires-dist = [
     { name = "clearml" },
     { name = "ipykernel", marker = "extra == 'dev'", specifier = ">=6.25" },
     { name = "jupyter", marker = "extra == 'dev'", specifier = ">=1.0" },
+    { name = "lightgbm" },
     { name = "lightgbm", specifier = ">=4.0" },
     { name = "matplotlib", specifier = ">=3.7" },
     { name = "numpy", specifier = ">=1.24" },
@@ -2263,6 +2264,7 @@ requires-dist = [
     { name = "torch", specifier = ">=2.0" },
     { name = "torch-geometric", specifier = ">=2.4" },
     { name = "tqdm", specifier = ">=4.65" },
+    { name = "xgboost" },
     { name = "xgboost", specifier = ">=2.0" },
 ]
 provides-extras = ["dev"]

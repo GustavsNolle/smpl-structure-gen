@@ -23,6 +23,7 @@ MOLECULENET_URLS = {
     "bace": "https://deepchemdata.s3-us-west-1.amazonaws.com/datasets/bace.csv",
     "hiv": "https://deepchemdata.s3-us-west-1.amazonaws.com/datasets/HIV.csv",
     "tox21": "https://deepchemdata.s3-us-west-1.amazonaws.com/datasets/tox21.csv.gz",
+    "clintox": "https://deepchemdata.s3-us-west-1.amazonaws.com/datasets/clintox.csv.gz",
 }
 
 # Column mappings: (smiles_column, target_columns, task_type)
@@ -37,6 +38,9 @@ DATASET_META = {
         "NR-AR", "NR-AR-LBD", "NR-AhR", "NR-Aromatase", "NR-ER", "NR-ER-LBD",
         "NR-PPAR-gamma", "SR-ARE", "SR-ATAD5", "SR-HSE", "SR-MMP", "SR-p53",
     ], "classification"),
+    "clintox": ("smiles", ["FDA_APPROVED", "CT_TOX"], "classification"),
+    "herg": ("smiles", ["hERG"], "classification"),
+    "sascore": ("smiles", ["sascore"], "regression"),
 }
 
 
@@ -65,10 +69,18 @@ def download_moleculenet(
     import requests
 
     dataset_name = dataset_name.lower()
+    
+    # Handle locally-generated / custom datasets
+    if dataset_name in ["herg", "sascore"]:
+        output_path = Path(raw_dir) / f"{dataset_name}.csv"
+        if not output_path.exists():
+            logger.warning("Dataset %s expects a local file at %s. Please run its generation script first.", dataset_name, output_path)
+        return output_path
+
     if dataset_name not in MOLECULENET_URLS:
         raise ValueError(
             f"Unknown dataset: {dataset_name}. "
-            f"Available: {list(MOLECULENET_URLS.keys())}"
+            f"Available: {list(MOLECULENET_URLS.keys())} + ['herg', 'sascore']"
         )
 
     raw_dir = Path(raw_dir)

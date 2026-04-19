@@ -17,6 +17,8 @@ from pathlib import Path
 
 import torch
 import pytorch_lightning as pl
+
+torch.set_float32_matmul_precision('medium')
 from clearml import Task
 from pytorch_lightning.callbacks import (
     Callback,

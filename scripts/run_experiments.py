@@ -34,6 +34,7 @@ from train import build_model
 
 import torch
 
+torch.set_float32_matmul_precision('medium')
 warnings.filterwarnings("ignore")
 logging.getLogger("pytorch_lightning").setLevel(logging.ERROR)
 

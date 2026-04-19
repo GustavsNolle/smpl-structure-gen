@@ -15,6 +15,24 @@ from clearml import Task
 
 logger = logging.getLogger(__name__)
 
+class FocalLossWithLogits(nn.Module):
+    def __init__(self, alpha=0.25, gamma=2.0, reduction='mean'):
+        super().__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.reduction = reduction
+        self.bce_with_logits = nn.BCEWithLogitsLoss(reduction='none')
+
+    def forward(self, inputs, targets):
+        bce_loss = self.bce_with_logits(inputs, targets)
+        pt = torch.exp(-bce_loss)  # Since BCE is -log(pt), pt = exp(-BCE)
+        focal_loss = self.alpha * (1 - pt) ** self.gamma * bce_loss
+        
+        if self.reduction == 'mean':
+            return focal_loss.mean()
+        elif self.reduction == 'sum':
+            return focal_loss.sum()
+        return focal_loss
 
 class CausalSemiSupModule(pl.LightningModule):
     def __init__(
@@ -42,7 +60,7 @@ class CausalSemiSupModule(pl.LightningModule):
         self.sparsity_beta = sparsity_beta
         self.env_beta = env_beta
 
-        self.bce_loss = nn.BCEWithLogitsLoss()
+        self.focal_loss = FocalLossWithLogits()
         self.mse_loss = nn.MSELoss()
 
         self.train_auroc = nn.ModuleList([BinaryAUROC() if tt == "classification" else None for tt in task_types])
@@ -75,15 +93,55 @@ class CausalSemiSupModule(pl.LightningModule):
             batch=batch.batch,
         )
     def _shared_step(self, batch, stage: str):
-        result = self(batch)
-        # Handle both old (3 outputs) and new (5 outputs) model formats
-        if len(result) == 5:
-            pred_c, pred_e, mask, contrastive_loss, log_vars = result
+        if stage in ["val", "test"]:
+            from torch_geometric.utils import dropout_adj
+            pred_c_list = []
+            pred_e_list = []
+            
+            for i in range(10):
+                if i == 0:
+                    result = self(batch)
+                    if len(result) == 5:
+                        pred_c, pred_e, mask, contrastive_loss, log_vars = result
+                    else:
+                        pred_c, pred_e, mask = result
+                        contrastive_loss = torch.tensor(0.0, device=self.device)
+                        log_vars = None
+                else:
+                    batch_aug = batch.clone()
+                    edge_index, edge_attr = dropout_adj(
+                        batch_aug.edge_index, 
+                        edge_attr=batch_aug.edge_attr, 
+                        p=0.02, 
+                        force_undirected=True, 
+                        num_nodes=batch_aug.num_nodes, 
+                        training=True
+                    )
+                    batch_aug.edge_index = edge_index
+                    batch_aug.edge_attr = edge_attr
+                    
+                    node_mask = torch.rand(batch_aug.num_nodes, device=self.device) < 0.05
+                    batch_aug.x[node_mask] = 0.0
+                    
+                    result_aug = self(batch_aug)
+                    pred_c_list.append(result_aug[0])
+                    pred_e_list.append(result_aug[1])
+            
+            pred_c_list.insert(0, pred_c)
+            pred_e_list.insert(0, pred_e)
+            
+            # Average the logits
+            pred_c = torch.stack(pred_c_list).mean(dim=0)
+            pred_e = torch.stack(pred_e_list).mean(dim=0)
         else:
-            pred_c, pred_e, mask = result
-            contrastive_loss = torch.tensor(0.0, device=self.device)
-            log_vars = None
-        
+            result = self(batch)
+            if len(result) == 5:
+                pred_c, pred_e, mask, contrastive_loss, log_vars = result
+            else:
+                pred_c, pred_e, mask = result
+                contrastive_loss = torch.tensor(0.0, device=self.device)
+                log_vars = None
+                
         y = batch.y.view(-1, len(self.task_types))
 
         causal_loss = 0.0
@@ -103,8 +161,14 @@ class CausalSemiSupModule(pl.LightningModule):
             valid_target = task_target[mask_valid]
             
             if tt == "classification":
-                lc = self.bce_loss(valid_pc, valid_target)
-                le = self.bce_loss(valid_pe, valid_target)
+                # Label Smoothing
+                if stage == "train":
+                    smoothed_target = valid_target * 0.9 + 0.05
+                    lc = self.focal_loss(valid_pc, smoothed_target)
+                    le = self.focal_loss(valid_pe, smoothed_target)
+                else:
+                    lc = self.focal_loss(valid_pc, valid_target)
+                    le = self.focal_loss(valid_pe, valid_target)
                 
                 causal_loss += lc
                 env_loss += le
@@ -153,7 +217,11 @@ class CausalSemiSupModule(pl.LightningModule):
                 valid_pc = task_pred_c[mask_valid]
                 valid_target = task_target[mask_valid]
                 if tt == "classification":
-                    lc = self.bce_loss(valid_pc, valid_target)
+                    if stage == "train":
+                        smoothed_target = valid_target * 0.9 + 0.05
+                        lc = self.focal_loss(valid_pc, smoothed_target)
+                    else:
+                        lc = self.focal_loss(valid_pc, valid_target)
                 else:
                     lc = self.mse_loss(valid_pc, valid_target) * 0.1
                 weighted_causal_loss += (lc * precision[i]) + log_vars[i]
@@ -190,6 +258,25 @@ class CausalSemiSupModule(pl.LightningModule):
         return total_loss
 
     def training_step(self, batch, batch_idx):
+        # Data Augmentation: Edge Dropping & Node Masking
+        from torch_geometric.utils import dropout_adj
+        
+        # 1. Edge Dropping (5%)
+        edge_index, edge_attr = dropout_adj(
+            batch.edge_index, 
+            edge_attr=batch.edge_attr, 
+            p=0.05, 
+            force_undirected=True, 
+            num_nodes=batch.num_nodes, 
+            training=self.training
+        )
+        batch.edge_index = edge_index
+        batch.edge_attr = edge_attr
+        
+        # 2. Node Attribute Masking (5%)
+        node_mask = torch.rand(batch.num_nodes, device=self.device) < 0.05
+        batch.x[node_mask] = 0.0
+        
         return self._shared_step(batch, "train")
 
     def validation_step(self, batch, batch_idx, dataloader_idx=0):
@@ -204,7 +291,7 @@ class CausalSemiSupModule(pl.LightningModule):
         self._log_epoch_metrics("test")
 
     def _log_epoch_metrics(self, stage: str) -> dict[str, float]:
-        overall_metric = 0.0
+        overall_score = 0.0
         num_valid = 0
         results = {}
         
@@ -228,7 +315,7 @@ class CausalSemiSupModule(pl.LightningModule):
                         
                     results[f"{stage}_{name}_auroc"] = val
                     results[f"{stage}_{name}_acc"] = acc_val
-                    overall_metric += val
+                    overall_score += val
                     num_valid += 1
                 except ValueError:
                     pass
@@ -256,7 +343,7 @@ class CausalSemiSupModule(pl.LightningModule):
                     results[f"{stage}_{name}_rmse"] = val
                     results[f"{stage}_{name}_mae"] = mae_val
                     results[f"{stage}_{name}_r2"] = r2_val
-                    overall_metric += -val 
+                    overall_score += r2_val 
                     num_valid += 1
                 except ValueError:
                     pass
@@ -265,12 +352,14 @@ class CausalSemiSupModule(pl.LightningModule):
                 r2_obj.reset()
 
         if num_valid > 0:
-            avg_score = overall_metric / num_valid
+            avg_score = overall_score / num_valid
             self.log(f"{stage}/overall_c_score", avg_score, prog_bar=True, sync_dist=True)
             self.log(f"{stage}_overall_c_score", avg_score, sync_dist=True)
             
-            # Route target to val_loss for checkpoint callback matching, avoiding idx suffix
+            # Save the new aggregate early stopping metric
             if stage == "val":
+                self.log(f"val_mean_target_score", avg_score, prog_bar=True, sync_dist=True, add_dataloader_idx=False)
+                # Keep val_loss for backwards compatibility with any other tools tracking it
                 self.log(f"val_loss", -avg_score, prog_bar=False, sync_dist=True, add_dataloader_idx=False)
                 
             results[f"{stage}_overall_score"] = avg_score
@@ -295,9 +384,26 @@ class CausalSemiSupModule(pl.LightningModule):
         logger.info("=========================================")
 
     def configure_optimizers(self):
-        optimizer = torch.optim.AdamW(
-            self.parameters(),
-            lr=self.learning_rate,
-            weight_decay=self.weight_decay,
+        log_var_params = [p for n, p in self.named_parameters() if 'log_vars' in n and p.requires_grad]
+        base_params = [p for n, p in self.named_parameters() if 'log_vars' not in n and p.requires_grad]
+        
+        optimizer = torch.optim.AdamW([
+            {'params': base_params, 'weight_decay': self.weight_decay},
+            {'params': log_var_params, 'weight_decay': 0.0}
+        ], lr=self.learning_rate)
+        
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+            optimizer, 
+            T_0=50, 
+            T_mult=2, 
+            eta_min=1e-6
         )
-        return optimizer
+        
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {
+                "scheduler": scheduler,
+                "interval": "epoch",
+                "frequency": 1
+            }
+        }
