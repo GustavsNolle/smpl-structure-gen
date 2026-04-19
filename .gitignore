@@ -24,6 +24,7 @@ data/ZINC/subset/
 *.csv.gz
 *.sdf
 *.mol2
+*.tab
 
 # Model checkpoints & logs
 checkpoints/
