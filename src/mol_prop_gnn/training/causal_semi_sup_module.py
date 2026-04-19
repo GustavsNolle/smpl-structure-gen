@@ -74,9 +74,16 @@ class CausalSemiSupModule(pl.LightningModule):
             edge_attr=batch.edge_attr,
             batch=batch.batch,
         )
-
     def _shared_step(self, batch, stage: str):
-        pred_c, pred_e, mask = self(batch)
+        result = self(batch)
+        # Handle both old (3 outputs) and new (5 outputs) model formats
+        if len(result) == 5:
+            pred_c, pred_e, mask, contrastive_loss, log_vars = result
+        else:
+            pred_c, pred_e, mask = result
+            contrastive_loss = torch.tensor(0.0, device=self.device)
+            log_vars = None
+        
         y = batch.y.view(-1, len(self.task_types))
 
         causal_loss = 0.0
@@ -102,7 +109,6 @@ class CausalSemiSupModule(pl.LightningModule):
                 causal_loss += lc
                 env_loss += le
                 
-                # Update metrics on Causal Subgraph ONLY (this is our true predictor)
                 if stage == "train":
                     self.train_auroc[i](valid_pc, valid_target.long())
                     self.train_acc[i](valid_pc, valid_target.long())
@@ -133,26 +139,44 @@ class CausalSemiSupModule(pl.LightningModule):
                     self.test_mae[i](valid_pc, valid_target)
                     self.test_r2[i].update(valid_pc, valid_target)
 
-        # Objective Function
-        total_loss = causal_loss
+        # Objective Function with Uncertainty Weighting 
+        if log_vars is not None:
+            # Uncertainty-weighted loss per task
+            precision = torch.exp(-log_vars)
+            weighted_causal_loss = 0.0
+            for i, (tt, name) in enumerate(zip(self.task_types, self.dataset_names)):
+                task_pred_c = pred_c[:, i]
+                task_target = y[:, i]
+                mask_valid = ~torch.isnan(task_target)
+                if not mask_valid.any():
+                    continue
+                valid_pc = task_pred_c[mask_valid]
+                valid_target = task_target[mask_valid]
+                if tt == "classification":
+                    lc = self.bce_loss(valid_pc, valid_target)
+                else:
+                    lc = self.mse_loss(valid_pc, valid_target) * 0.1
+                weighted_causal_loss += (lc * precision[i]) + log_vars[i]
+            total_loss = weighted_causal_loss
+        else:
+            total_loss = causal_loss
         
-        # 1. Sparsity Loss (Information Bottleneck)
-        # Forces the mask to be as sparse as possible (close to 0), squeezing out everything
-        # except the most causal variables necessary to satisfy `causal_loss`.
+        # Sparsity Loss
         mask_loss = mask.mean()
         if self.sparsity_beta > 0:
             total_loss += self.sparsity_beta * mask_loss
             
-        # 2. Environment Entropy Penalty (IRM-lite)
-        # If the environment loss is SMALL, it means the environment contains spurious features 
-        # perfectly matching the label. We penalize this heavily!
-        # exp(-env_loss) approaches 1 when env_loss is 0, and 0 when env_loss is large.
+        # Environment Penalty
         env_penalty = torch.tensor(0.0, device=self.device)
         if self.env_beta > 0 and hasattr(env_loss, 'item') and env_loss > 0:
             env_penalty = self.env_beta * torch.exp(-env_loss)
             total_loss += env_penalty
+        
+        # Contrastive Loss (from new model)
+        if contrastive_loss > 0:
+            total_loss += contrastive_loss
 
-        # Detach for logging
+        # Logging
         with torch.no_grad():
             detached_loss = total_loss.detach().cpu().item()
             self.log(f"{stage}/loss", detached_loss, batch_size=batch.num_graphs, prog_bar=True, sync_dist=True)
@@ -160,6 +184,8 @@ class CausalSemiSupModule(pl.LightningModule):
             self.log(f"{stage}/mask_sparsity", mask_loss.detach().cpu(), batch_size=batch.num_graphs, sync_dist=True)
             if self.env_beta > 0 and hasattr(env_loss, 'item'):
                 self.log(f"{stage}/env_penalty", env_penalty.detach().cpu(), batch_size=batch.num_graphs, sync_dist=True)
+            if contrastive_loss > 0:
+                self.log(f"{stage}/contrastive_loss", contrastive_loss.detach().cpu(), batch_size=batch.num_graphs, sync_dist=True)
 
         return total_loss
 
