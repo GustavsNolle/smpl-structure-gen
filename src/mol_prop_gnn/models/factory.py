@@ -16,6 +16,7 @@ from mol_prop_gnn.models.sage import MolGraphSAGE
 from mol_prop_gnn.models.transformer import MolTransformerGNN
 from mol_prop_gnn.models.joint_embedder import JointMolEmbedder
 from mol_prop_gnn.models.causal_embedder import CausalMolEmbedder
+from mol_prop_gnn.models.hybrid_causal import CausalContrastiveUncertaintyEmbedder
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +74,7 @@ def build_joint_model(
         dropout=dropout
     )
 
+
 def build_causal_model(
     backbone_name: str,
     node_dim: int,
@@ -83,8 +85,26 @@ def build_causal_model(
     num_layers: int = 5,
     dropout: float = 0.3,
     deg: list[int] | None = None
-) -> CausalMolEmbedder:
-    """Builds the full CausalMolEmbedder with the specified backbone."""
+):
+    
+    if backbone_name == "hybrid_causal":
+        backbone = build_backbone(
+            name="gcn",
+            node_dim=node_dim,
+            edge_dim=edge_dim,
+            hidden_dim=hidden_dim,
+            layers=num_layers,
+            deg=deg
+        )
+        return CausalContrastiveUncertaintyEmbedder(
+            backbone=backbone,
+            backbone_out_dim=backbone.out_channels,
+            num_datasets=num_tasks,
+            bottleneck_dim=bottleneck_dim,
+            dropout=dropout
+        )
+    
+    # Original code for other models
     backbone = build_backbone(
         name=backbone_name,
         node_dim=node_dim,
