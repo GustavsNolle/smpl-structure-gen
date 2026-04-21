@@ -42,6 +42,17 @@ def build_backbone(
         return MolGraphSAGE(node_input_dim=node_dim, edge_input_dim=edge_dim, hidden_dim=hidden_dim, num_layers=layers)
     elif name == "transformer":
         return MolTransformerGNN(node_input_dim=node_dim, edge_input_dim=edge_dim, hidden_dim=hidden_dim, num_gnn_layers=layers)
+    elif name in ["gine", "gine_finetune"]:
+        from mol_prop_gnn.models.gine_sixseeven import MolGINE
+        return MolGINE(
+            node_input_dim=node_dim,
+            edge_input_dim=edge_dim,
+            hidden_dim=hidden_dim,
+            num_gnn_layers=layers,
+            dropout=0.3,
+            global_features_dim=0,
+            output_dim=1
+        )
     else:
         raise ValueError(f"Unknown backbone: {name}")
 
@@ -87,9 +98,9 @@ def build_causal_model(
     deg: list[int] | None = None
 ):
     
-    if backbone_name == "hybrid_causal":
+    if backbone_name in ["hybrid_causal", "gine_finetune"]:
         backbone = build_backbone(
-            name="gcn",
+            name="gine",
             node_dim=node_dim,
             edge_dim=edge_dim,
             hidden_dim=hidden_dim,

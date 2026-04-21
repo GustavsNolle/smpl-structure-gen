@@ -1,0 +1,36 @@
+# Phase 3: Conditional DiGress (Counterfactual Molecule Generation)
+# -----------------------------------------------------
+# Trains a Discrete Denoising Diffusion Model (DiGress) guided by a 
+# frozen Causal Judge embedding to generate counterfactual molecules.
+#
+# Usage:
+#   uv run python scripts/train_digress.py --config configs/digress.yaml
+
+# DiGress Architecture
+num_node_classes: 11
+num_edge_classes: 6
+hidden_dim: 256
+causal_cond_dim: 256
+num_layers: 6
+num_heads: 4
+
+# Diffusion Process
+num_timesteps: 100
+p_uncond: 0.25 # Classifier-Free Guidance dropout rate
+
+# Training hyperparameters
+epochs: 100
+batch_size: 128
+lr: 0.00001
+
+# Data
+# We use ZINC for pre-training the generation capabilities
+data:
+  root: "data/ZINC"
+
+# Causal Judge
+causal_judge_model_id: "94f148c657ed4b7b8fdaa54b4ad2bdd3"
+
+# Infrastructure
+accelerator: auto
+num_workers: 8

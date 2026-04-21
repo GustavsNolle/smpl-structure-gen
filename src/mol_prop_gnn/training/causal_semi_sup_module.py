@@ -85,13 +85,18 @@ class CausalSemiSupModule(pl.LightningModule):
         
         self.latest_test_results = {}
 
-    def forward(self, batch) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        return self.model(
+    def forward(self, batch):
+        result = self.model(
             x=batch.x,
             edge_index=batch.edge_index,
             edge_attr=batch.edge_attr,
             batch=batch.batch,
         )
+        if len(result) == 5:
+            pred_c, pred_e, mask, _, _ = result
+            return pred_c, pred_e, mask
+        return result
+        
     def _shared_step(self, batch, stage: str):
         if stage in ["val", "test"]:
             from torch_geometric.utils import dropout_adj

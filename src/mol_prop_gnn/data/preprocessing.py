@@ -158,10 +158,10 @@ def get_edge_feature_dim() -> int:
 # ── Bond Type to Relation Index (for RGCN) ──────────────────────────────
 
 BOND_TYPE_TO_REL = {
-    "SINGLE": 0,
-    "DOUBLE": 1,
-    "TRIPLE": 2,
-    "AROMATIC": 3,
+    "SINGLE": 1,
+    "DOUBLE": 2,
+    "TRIPLE": 3,
+    "AROMATIC": 4,
 }
 
 
