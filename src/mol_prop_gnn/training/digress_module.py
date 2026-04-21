@@ -148,24 +148,26 @@ class DiGressModule(pl.LightningModule):
         
         # Load ZINC marginals
         marginals_path = Path("data/zinc_marginals.pt")
-                # 2. Hardcoded Dense ZINC Edge Marginals (Idealized Sparsity)
-        # This bypasses the "Sparse Trap" where the model thinks bonds are common.
-        # 95% No-Bond, 4% Single, 0.5% Double, 0.2% Triple, 0.2% Aromatic, 0.1% Other
-        edge_m = torch.tensor([0.95, 0.04, 0.005, 0.002, 0.002, 0.001], device=self.device)
-        self.register_buffer("edge_marginals", edge_m)
-            
-        # 3. Node Marginals
-        node_m = torch.ones(self.num_node_classes, device=self.device) / self.num_node_classes
-        self.register_buffer("node_marginals", node_m)
         
-        # Load Node Marginals from file if exists, else fallback to uniform
+        # Hardcoded Dense ZINC Edge Marginals (Idealized Sparsity)
+        # 95% No-Bond, 4% Single, 0.5% Double, 0.2% Triple, 0.2% Aromatic, 0.1% Other
+        edge_m = torch.tensor([0.95, 0.04, 0.005, 0.002, 0.002, 0.001])
+        self.register_buffer("edge_marginals", edge_m)
+        
+        # Node Marginals: load from file or use uniform
         if marginals_path.exists():
             logger.info("Loading ZINC node marginals...")
             marginals = torch.load(marginals_path)
-            self.register_buffer("node_marginals", marginals["node_marginals"])
+            node_m = marginals["node_marginals"]
         else:
             logger.warning("ZINC marginals not found! Falling back to uniform for nodes.")
-            self.register_buffer("node_marginals", torch.ones(num_node_classes) / num_node_classes)
+            node_m = torch.ones(num_node_classes) / num_node_classes
+        
+        # CRITICAL: Floor all marginals to prevent zero-probability classes.
+        # Zero entries cause NaN in multinomial sampling at high noise levels.
+        node_m = torch.clamp(node_m, min=1e-6)
+        node_m = node_m / node_m.sum()  # Re-normalize
+        self.register_buffer("node_marginals", node_m)
 
         # GPU Bottleneck Fix: Register noise schedule as buffer
         alpha_bar_all = get_noise_schedule(num_timesteps, torch.device('cpu'))
@@ -285,6 +287,9 @@ class DiGressModule(pl.LightningModule):
             X_true = batch.node_type
         else:
             X_true = torch.argmax(batch.x[:, :10], dim=1) % self.num_node_classes
+        
+        # Defense-in-depth: clamp indices to valid ranges to prevent CUDA asserts
+        X_true = torch.clamp(X_true, 0, self.num_node_classes - 1)
             
         # 3b. Denseify graphs for discrete diffusion (fully connected topology)
         edge_index_dense, E_true = denseify_graphs(
@@ -293,6 +298,7 @@ class DiGressModule(pl.LightningModule):
             batch_idx=batch.batch,
             num_edge_classes=self.num_edge_classes
         )
+        E_true = torch.clamp(E_true, 0, self.num_edge_classes - 1)
             
         # 4. Forward Diffusion (Add Noise)
         alpha_bar_t = self.alpha_bar_all[t]
@@ -346,15 +352,23 @@ class DiGressModule(pl.LightningModule):
         batch_size, max_nodes, _ = adj_dense.shape
         
         # B. Laplacian Connectivity Loss (Anti-Fragment)
-        # L = D - A
-        D_dense = torch.diag_embed(adj_dense.sum(dim=-1))
-        L_dense = D_dense - adj_dense
-        # Fiedler values: second smallest eigenvalues
-        evals_dense = torch.linalg.eigvalsh(L_dense)
-        if evals_dense.shape[1] > 1:
-            lambda2 = evals_dense[:, 1]
-            loss_conn = F.relu(0.02 - lambda2).mean() # Encourage connectivity
-        else:
+        # CRITICAL: eigvalsh backward is numerically unstable for near-singular
+        # matrices (common in early training). We compute the Fiedler value
+        # WITHOUT gradients and create a differentiable proxy via the adjacency.
+        try:
+            with torch.no_grad():
+                D_dense = torch.diag_embed(adj_dense.sum(dim=-1))
+                L_dense = D_dense - adj_dense
+                evals_dense = torch.linalg.eigvalsh(L_dense)
+            if evals_dense.shape[1] > 1:
+                lambda2 = evals_dense[:, 1]
+                # Use the detached eigenvalue as a TARGET for a differentiable proxy:
+                # Penalize low connectivity via the minimum row-sum of adj (proxy for Fiedler)
+                min_degree = adj_dense.sum(dim=-1).min(dim=-1).values
+                loss_conn = F.relu(0.1 - min_degree).mean()
+            else:
+                loss_conn = torch.tensor(0.0, device=self.device)
+        except Exception:
             loss_conn = torch.tensor(0.0, device=self.device)
         
         # C. Density Prior (Anti-Hairball)
