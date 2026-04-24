@@ -223,39 +223,30 @@ class ConditionalDiGressNet(nn.Module):
             
         return self._forward_impl(X, E, edge_index, batch_idx, t, c)
 
-    def _forward_impl(
-        self, 
-        X: torch.Tensor, 
-        E: torch.Tensor, 
-        edge_index: torch.Tensor, 
+    def _compute_structural_features(
+        self,
+        E: torch.Tensor,
+        edge_index: torch.Tensor,
         batch_idx: torch.Tensor,
-        t: torch.Tensor, 
-        c: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Core forward logic without CFG mask application."""
-        # 1. Structural Encodings Calculation
-        # We need the adjacency matrix for structural features
-        # Mapping edge types to weights: No Bond=0, others=1.0 for simplicity in topology
-        # Alternatively, use bond orders: 1, 2, 3, 1.5
-        edge_weights = torch.zeros_like(E, dtype=torch.float32)
-        edge_weights[E == 1] = 1.0 # Single
-        edge_weights[E == 2] = 2.0 # Double
-        edge_weights[E == 3] = 3.0 # Triple
-        edge_weights[E == 4] = 1.5 # Aromatic
+    ) -> torch.Tensor:
+        """Compute structural encodings (cycle features + Laplacian eigenvectors).
         
-        # [batch_size, max_nodes, max_nodes]
+        This is the expensive part (matrix powers + eigendecomposition).
+        Returns sparse structural features [num_total_nodes, struct_dim].
+        """
+        # Map edge types to weights for topology
+        edge_weights = torch.zeros_like(E, dtype=torch.float32)
+        edge_weights[E == 1] = 1.0
+        edge_weights[E == 2] = 2.0
+        edge_weights[E == 3] = 3.0
+        edge_weights[E == 4] = 1.5
+        
         adj = to_dense_adj(edge_index, batch_idx, edge_weights)
-        device = X.device
+        device = E.device
         batch_size = adj.shape[0]
         max_nodes = adj.shape[1]
         
         # A. Cycle Features (diag(A^k) for k=3,4,5,6)
-        cycle_features = []
-        curr_adj = adj
-        for k in [2, 3, 4, 5]: # We want A^3, A^4, A^5, A^6. Wait, the loop starts at A^1.
-            # We'll just do it explicitly for clarity
-            pass
-            
         A2 = torch.bmm(adj, adj)
         A3 = torch.bmm(A2, adj)
         A4 = torch.bmm(A3, adj)
@@ -267,78 +258,82 @@ class ConditionalDiGressNet(nn.Module):
         c5 = torch.diagonal(A5, dim1=-2, dim2=-1)
         c6 = torch.diagonal(A6, dim1=-2, dim2=-1)
         
-        # [batch_size, max_nodes, 4]
         cycles = torch.stack([c3, c4, c5, c6], dim=-1)
-        # Normalize to avoid exploding values in dense graphs
         cycles = torch.log1p(cycles)
         
         # B. Laplacian Eigenvectors
-        # L = D - A. D is diagonal sum of rows.
         D = torch.diag_embed(adj.sum(dim=-1))
         L = D - adj
         
-        # Compute eigenvalues/vectors
-        # Using eigh for symmetric matrices
         try:
             evals, evecs = torch.linalg.eigh(L)
-            # Take first num_laplace_dims eigenvectors (ignoring the first one which is constant for connected graphs)
-            # evecs: [batch_size, max_nodes, max_nodes]
-            # We take indices 1 to num_laplace_dims+1
             laplace_feats = evecs[:, :, 1:1 + self.num_laplace_dims]
-            # Zero pad if max_nodes is smaller than requested dims
             if laplace_feats.shape[2] < self.num_laplace_dims:
                 padding = self.num_laplace_dims - laplace_feats.shape[2]
                 laplace_feats = F.pad(laplace_feats, (0, padding))
         except Exception:
-            # Fallback for non-convergent cases or singular matrices in noise
             laplace_feats = torch.zeros((batch_size, max_nodes, self.num_laplace_dims), device=device)
             
-        # Combine structural features
         struct_feats_dense = torch.cat([cycles, laplace_feats], dim=-1)
         
         # Flatten back to sparse node representation
-        # [num_total_nodes, struct_dim]
-        # We need a mask to extract the actual nodes from the dense batch
         _, counts = torch.unique(batch_idx, return_counts=True)
-        struct_feats_list = []
-        for i, count in enumerate(counts):
-            struct_feats_list.append(struct_feats_dense[i, :count])
+        struct_feats_list = [struct_feats_dense[i, :count] for i, count in enumerate(counts)]
         struct_feats = torch.cat(struct_feats_list, dim=0)
         
-        # 2. Embeddings
-        x_emb = self.node_emb(X)  # [num_total_nodes, hidden_dim]
-        e_emb = self.edge_emb(E)  # [num_total_edges, hidden_dim]
+        return struct_feats
+
+    def _forward_with_struct(
+        self, 
+        X: torch.Tensor, 
+        E: torch.Tensor, 
+        edge_index: torch.Tensor, 
+        batch_idx: torch.Tensor,
+        t: torch.Tensor, 
+        c: torch.Tensor,
+        struct_feats: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Forward pass using pre-computed structural features (avoids redundant bmm/eigh)."""
+        # Embeddings
+        x_emb = self.node_emb(X)
+        e_emb = self.edge_emb(E)
         
         # Inject structural information
         x_emb = x_emb + self.struct_emb(struct_feats)
         
-        # 2. Timestep + Embedding Fusion
-        # t: [batch_size] -> t_emb: [batch_size, time_dim]
+        # Timestep + Embedding Fusion
         t_emb = sinusoidal_embedding(t, self.time_dim)
         t_emb = self.time_mlp(t_emb)
         
-        # condition_vec: [batch_size, cond_dim]
         condition_vec = torch.cat([t_emb, c], dim=-1)
-        
-        # Broadcast condition_vec to nodes
-        # cond_node: [num_total_nodes, cond_dim]
         cond_node = condition_vec[batch_idx]
         
-        # 3. Message Passing with AdaLN-Zero
+        # Message Passing with AdaLN-Zero
         for block in self.blocks:
             x_emb, e_emb = block(x_emb, edge_index, e_emb, cond_node)
             
-        # 4. Predict Logits
-        node_logits = self.node_pred_head(x_emb)  # [num_total_nodes, num_node_classes]
+        # Predict Logits
+        node_logits = self.node_pred_head(x_emb)
         
-        # Symmetrized edge prediction: node_sum + edge_features
         src, dst = edge_index
-        # node_pair_repr is permutation-invariant (undirected)
         node_pair_repr = x_emb[src] + x_emb[dst]
         edge_repr = torch.cat([node_pair_repr, e_emb], dim=-1)
-        edge_logits = self.edge_pred_head(edge_repr)  # [num_total_edges, num_edge_classes]
+        edge_logits = self.edge_pred_head(edge_repr)
         
         return node_logits, edge_logits
+
+    def _forward_impl(
+        self, 
+        X: torch.Tensor, 
+        E: torch.Tensor, 
+        edge_index: torch.Tensor, 
+        batch_idx: torch.Tensor,
+        t: torch.Tensor, 
+        c: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Core forward logic without CFG mask application."""
+        struct_feats = self._compute_structural_features(E, edge_index, batch_idx)
+        return self._forward_with_struct(X, E, edge_index, batch_idx, t, c, struct_feats)
 
     @torch.no_grad()
     def predict_cfg_logits(
@@ -353,31 +348,29 @@ class ConditionalDiGressNet(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """CFG Sampling Logic (The Reverse Process).
         
-        Runs the network twice and applies CFG math to the raw unnormalized logits.
-        
-        Args:
-            X, E, edge_index, batch_idx, t: Graph state at timestep t.
-            c: Target causal embeddings [batch_size, causal_cond_dim]
-            guidance_scale (w): Strength of guidance.
-        Returns:
-            final_node_logits, final_edge_logits
+        Runs the network twice but SHARES structural encodings between passes,
+        since both passes have the same graph topology (X, E, edge_index).
+        This cuts the expensive bmm/eigh computation in half.
         """
         batch_size = t.shape[0]
         
-        # 1. Unconditional pass (logits_unc)
+        # Compute structural features ONCE (the expensive part)
+        struct_feats = self._compute_structural_features(E, edge_index, batch_idx)
+        
+        # 1. Unconditional pass
         c_uncond = self.null_embedding.expand(batch_size, -1)
-        node_logits_unc, edge_logits_unc = self._forward_impl(
-            X, E, edge_index, batch_idx, t, c_uncond
+        node_logits_unc, edge_logits_unc = self._forward_with_struct(
+            X, E, edge_index, batch_idx, t, c_uncond, struct_feats
         )
         
-        # 2. Conditional pass (logits_cond)
-        node_logits_cond, edge_logits_cond = self._forward_impl(
-            X, E, edge_index, batch_idx, t, c
+        # 2. Conditional pass (reuses struct_feats!)
+        node_logits_cond, edge_logits_cond = self._forward_with_struct(
+            X, E, edge_index, batch_idx, t, c, struct_feats
         )
         
-        # 3. CFG Math: Extrapolate unnormalized logits
-        # final_logits = logits_unc + w * (logits_cond - logits_unc)
+        # 3. CFG Math
         final_node_logits = node_logits_unc + guidance_scale * (node_logits_cond - node_logits_unc)
         final_edge_logits = edge_logits_unc + guidance_scale * (edge_logits_cond - edge_logits_unc)
         
         return final_node_logits, final_edge_logits
+

@@ -55,8 +55,10 @@ def main() -> None:
     parser.add_argument("--num_workers", type=int, default=8, help="Number of data loading workers")
     parser.add_argument("--accelerator", type=str, default="auto", help="Hardware accelerator (auto, cpu, gpu)")
     parser.add_argument("--resume_id", type=str, default=None, help="ClearML model ID to resume training from")
+    parser.add_argument("--reset", action="store_true", help="Force start from scratch even if local checkpoint exists")
     
     args, _ = parser.parse_known_args()
+
     if args.config:
         apply_config_to_parser(parser, args.config)
     args = parser.parse_args()
@@ -87,19 +89,22 @@ def main() -> None:
     
     # 3. Model Setup
     causal_judge_model_id = config.get("causal_judge_model_id", "94f148c657ed4b7b8fdaa54b4ad2bdd3")
+    property_judge_ids = config.get("property_judge_ids", {})
     
     lit_module = DiGressModule(
         num_node_classes=config.get("num_node_classes", 11),
         num_edge_classes=config.get("num_edge_classes", 6),
         hidden_dim=args.hidden_dim,
-        causal_cond_dim=config.get("causal_cond_dim", 128),
+        causal_cond_dim=config.get("causal_cond_dim", 448),
         num_layers=args.num_layers,
         num_heads=args.num_heads,
         num_timesteps=args.num_timesteps,
         learning_rate=args.lr,
         causal_judge_model_id=causal_judge_model_id,
+        property_judge_ids=property_judge_ids,
         p_uncond=args.p_uncond
     )
+
     
     # 4. Trainer Setup
     checkpoint_callback = ModelCheckpoint(
@@ -107,8 +112,8 @@ def main() -> None:
         monitor="val_loss",
         mode="min",
         save_top_k=1,
+        filename="digress_best",
         save_last=True,
-        every_n_epochs=5
     )
     
     tb_logger = pl.loggers.TensorBoardLogger(
@@ -164,7 +169,8 @@ def main() -> None:
         train_smiles=train_smiles,
         train_node_counts=node_counts,
         num_samples=1000,
-        guidance_scale=7.0,
+        guidance_scale=1.2,
+
         evaluate_every_n_epochs=1  # Run often for monitoring
     )
     
@@ -180,18 +186,54 @@ def main() -> None:
     
     # 5. Execute Training
     ckpt_path = None
+    ckpt_dir = Path("checkpoints/phase3_digress")
+    
+    # Find the latest last*.ckpt
+    latest_last_ckpt = None
+    if ckpt_dir.exists():
+        last_ckpts = list(ckpt_dir.glob("last*.ckpt"))
+        if last_ckpts:
+            # Sort by modification time to get the true latest
+            latest_last_ckpt = max(last_ckpts, key=lambda p: p.stat().st_mtime)
+            
     if args.resume_id:
         logger.info(f"Resuming from ClearML Model ID: {args.resume_id}...")
         resume_model = Model(model_id=args.resume_id)
         ckpt_path = resume_model.get_local_copy()
         logger.info(f"Local checkpoint path: {ckpt_path}")
+    elif latest_last_ckpt and not args.reset:
+        # DIMENSION SAFETY CHECK:
+        # Load the checkpoint header to check if causal_cond_dim matches
+        try:
+            ckpt = torch.load(latest_last_ckpt, map_location="cpu", weights_only=False)
+            ckpt_dim = ckpt["state_dict"]["model.null_embedding"].shape[1]
+            if ckpt_dim == config.get("causal_cond_dim", 448):
+                logger.info(f"Auto-resuming from local last checkpoint: {latest_last_ckpt} (Dim {ckpt_dim} matches)")
+                ckpt_path = str(latest_last_ckpt)
+            else:
+                logger.warning(
+                    f"Local checkpoint dimension ({ckpt_dim}) does not match current config ({config.get('causal_cond_dim')}). "
+                    "Starting from scratch to avoid size mismatch."
+                )
+        except Exception as e:
+            logger.warning(f"Could not verify checkpoint compatibility: {e}. Starting from scratch.")
+    elif args.reset:
+        logger.info("Found local checkpoint but --reset was provided. Starting from scratch.")
 
-    logger.info("Starting DiGress Training with Causal Guidance...")
+    logger.info("Starting DiGress Training with Hybrid Causal Guidance...")
+
+
     trainer.fit(
         lit_module, 
         datamodule=datamodule,
         ckpt_path=ckpt_path
     )
+    
+    # 6. Explicitly register the best model to ClearML
+    best_ckpt = checkpoint_callback.best_model_path
+    if best_ckpt and Path(best_ckpt).exists():
+        logger.info(f"Registering best model to ClearML: {best_ckpt}")
+        task.update_output_model(model_path=best_ckpt, name="digress_best")
     
     logger.info("✓ Phase 3 Training Complete!")
 

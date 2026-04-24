@@ -36,6 +36,8 @@ mlruns/
 *.pt
 *.pth
 
+docking_results/
+
 # Jupyter
 .ipynb_checkpoints/
 

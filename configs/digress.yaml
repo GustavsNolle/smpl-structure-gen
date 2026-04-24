@@ -10,7 +10,7 @@
 num_node_classes: 11
 num_edge_classes: 6
 hidden_dim: 256
-causal_cond_dim: 256
+causal_cond_dim: 448
 num_layers: 6
 num_heads: 4
 
@@ -28,8 +28,13 @@ lr: 0.00001
 data:
   root: "data/ZINC"
 
-# Causal Judge
+# Judges
 causal_judge_model_id: "94f148c657ed4b7b8fdaa54b4ad2bdd3"
+property_judge_ids:
+  logp: "371f9e9d32c4423fb93b8e24f0a412ef"
+  sascore: "18b2b7f45a824235a2e8a6cac94ef5bb"
+  qed: "0dc283ff779644e9a994cb7094fe673f"
+
 
 # Infrastructure
 accelerator: auto

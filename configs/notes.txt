@@ -1,0 +1,8 @@
+Gemini came up with:
+Nc1ncnc2[nH]cc(C34CC(C3)(C4)c5ccc(F)cc5)c12
+
+O=C(C12CC3CC(C1)CC(C2)C3)N4CC5CC5C4
+
+O=C(C1=CNC2=C1C=C(OC(F)(F)F)C=C2)C(C3=CC=C(Cl)C=C3OC)NC4=CC(S(=O)(C)=O)=CC(OC)=C4
+
+O=S(C(C=C1)=CC=C1OCC)(N2N=C(C=C2N)OC(C3=CC=C(C=C3)C4=CC=CC=C4)=O)=O

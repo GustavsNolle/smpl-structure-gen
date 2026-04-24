@@ -9,6 +9,7 @@ from pathlib import Path
 from clearml import Model
 from mol_prop_gnn.models.digress import ConditionalDiGressNet
 from mol_prop_gnn.models.factory import build_causal_model
+from mol_prop_gnn.models.mini_judge_gin import MiniJudgeGIN
 from torch_geometric.utils import to_dense_adj
 from mol_prop_gnn.data.preprocessing import get_node_feature_dim, get_edge_feature_dim
 
@@ -106,6 +107,36 @@ def denseify_graphs(batch_edge_index, batch_edge_attr, batch_idx, num_edge_class
         
     return torch.cat(edge_index_list, dim=1), torch.cat(E_dense_list, dim=0)
 
+
+def digress_to_judge_features(X, E, edge_index, num_node_classes=11, num_edge_classes=6):
+    """Converts DiGress categorical atom/bond types to Judge featurization.
+    
+    DiGress (11 classes): 0:C, 1:N, 2:O, 3:F, 4:P, 5:S, 6:Cl, 7:Br, 8:I, 9-10:Other
+    Judge (38 dims): One-hot atom types (C, N, O, S, F, P, Cl, Br, I, ...) + structural info.
+    
+    Since structural info (degree, formal charge) is not explicitly tracked in DiGress's
+    discrete state, we provide the atom-type one-hot and zero out the rest.
+    """
+    device = X.device
+    num_nodes = X.shape[0]
+    num_edges = E.shape[0]
+    
+    # 1. Node Features (38 dims)
+    x_rdkit = torch.zeros((num_nodes, 38), device=device)
+    for i in range(9):
+        mask = (X == i)
+        x_rdkit[mask, i] = 1.0
+    mask_other = (X >= 9)
+    x_rdkit[mask_other, 9] = 1.0
+    
+    # 2. Edge Features (12 dims)
+    e_rdkit = torch.zeros((num_edges, 12), device=device)
+    for i in range(1, 6):
+        mask = (E == i)
+        e_rdkit[mask, i-1] = 1.0
+        
+    return x_rdkit, e_rdkit
+
 class DiGressModule(pl.LightningModule):
     """PyTorch Lightning Module for training Conditional DiGress."""
 
@@ -120,8 +151,10 @@ class DiGressModule(pl.LightningModule):
         num_timesteps: int = 1000,
         learning_rate: float = 1e-3,
         causal_judge_model_id: str = "94f148c657ed4b7b8fdaa54b4ad2bdd3",
+        property_judge_ids: dict = None,
         p_uncond: float = 0.15
     ):
+
         super().__init__()
         self.save_hyperparameters()
         
@@ -141,10 +174,13 @@ class DiGressModule(pl.LightningModule):
             num_heads=num_heads
         )
         
-        # We will load the frozen causal judge dynamically in setup()
-        # to ensure it's on the correct device.
+        # We will load the frozen judges dynamically in setup()
         self.causal_judge = None
         self.causal_judge_model_id = causal_judge_model_id
+        
+        # New Mini Judges for specialized property guidance
+        self.property_judges = nn.ModuleDict()
+        self.property_judge_ids = {} # Populated from config
         
         # Load ZINC marginals
         marginals_path = Path("data/zinc_marginals.pt")
@@ -174,104 +210,132 @@ class DiGressModule(pl.LightningModule):
         self.register_buffer("alpha_bar_all", alpha_bar_all)
 
     def setup(self, stage=None):
-        """Loads the pre-trained frozen Causal Judge from ClearML."""
+        """Loads the pre-trained frozen judges from ClearML."""
+        # 1. Load Original Causal Judge
         if self.causal_judge is None:
             logger.info(f"Loading frozen Causal Judge (ClearML ID: {self.causal_judge_model_id})...")
-            
-            # Use ClearML to fetch the local path of the downloaded model
             model_info = Model(model_id=self.causal_judge_model_id)
             local_path = model_info.get_local_copy()
-            
-            # Load the checkpoint
-            ckpt = torch.load(local_path, map_location=self.device)
-            
-            # Retrieve the model config from hyperparameters
+            ckpt = torch.load(local_path, map_location=self.device, weights_only=False)
             model_config = ckpt.get("hyper_parameters", {}).get("model_config", {})
             
-            # Extract values with fallbacks to defaults
-            backbone_name = model_config.get("backbone_name", "gin")
-            hidden_dim = model_config.get("hidden_dim", 256)
-            num_layers = model_config.get("num_layers", 5)
-            dropout = model_config.get("dropout", 0.3)
-            
-            # Auto-detect bottleneck_dim from state_dict if missing from model_config
-            state_dict = ckpt["state_dict"]
-            if "model.causal_head.weight" in state_dict:
-                # Shape is [num_tasks, bottleneck_dim]
-                bottleneck_dim = state_dict["model.causal_head.weight"].shape[1]
-                logger.info(f"Auto-detected bottleneck_dim={bottleneck_dim} from state_dict.")
-            else:
-                bottleneck_dim = model_config.get("bottleneck_dim", self.hparams.causal_cond_dim)
-            
-            if bottleneck_dim != self.hparams.causal_cond_dim:
-                logger.warning(
-                    f"Causal Judge bottleneck ({bottleneck_dim}) does not match "
-                    f"DiGress causal_cond_dim ({self.hparams.causal_cond_dim}). "
-                    "This may cause a dimension mismatch in the generator forward pass!"
-                )
-                
-            num_tasks = model_config.get("num_tasks", 21)
-            deg = model_config.get("deg", None)
-            
             judge_model = build_causal_model(
-                backbone_name=backbone_name,
+                backbone_name=model_config.get("backbone_name", "gin"),
                 node_dim=get_node_feature_dim(),
                 edge_dim=get_edge_feature_dim(),
-                num_tasks=num_tasks,
-                bottleneck_dim=bottleneck_dim,
-                hidden_dim=hidden_dim,
-                num_layers=num_layers,
-                dropout=dropout,
-                deg=deg
+                num_tasks=model_config.get("num_tasks", 21),
+                bottleneck_dim=model_config.get("bottleneck_dim", 256),
+                hidden_dim=model_config.get("hidden_dim", 256),
+                num_layers=model_config.get("num_layers", 5),
+                dropout=model_config.get("dropout", 0.3)
             )
-            
-            # Extract state dict for the model within the Lightning Module
-            state_dict = ckpt["state_dict"]
-            model_state_dict = {k[6:]: v for k, v in state_dict.items() if k.startswith("model.")}
-            judge_model.load_state_dict(model_state_dict)
-            
-            self.causal_judge = judge_model
-            self.causal_judge.to(self.device)
-            self.causal_judge.eval()
-            
-            # Freeze the judge
-            for param in self.causal_judge.parameters():
-                param.requires_grad = False
-                
-            logger.info("Causal Judge loaded and frozen successfully.")
+            state_dict = {k[6:]: v for k, v in ckpt["state_dict"].items() if k.startswith("model.")}
+            judge_model.load_state_dict(state_dict)
+            self.causal_judge = judge_model.to(self.device).eval()
+            for p in self.causal_judge.parameters(): p.requires_grad = False
+            logger.info("Causal Judge loaded successfully.")
+
+        # 2. Load Mini Property Judges
+        if not self.property_judges and hasattr(self.hparams, 'property_judge_ids'):
+            ids = self.hparams.property_judge_ids
+            if isinstance(ids, dict):
+                for prop, mid in ids.items():
+                    logger.info(f"Loading Mini Judge for {prop} (ClearML ID: {mid})...")
+                    m_info = Model(model_id=mid)
+                    l_path = m_info.get_local_copy()
+                    m_ckpt = torch.load(l_path, map_location=self.device, weights_only=False)
+                    mh = m_ckpt.get("hyper_parameters", {})
+                    
+                    p_model = MiniJudgeGIN(
+                        node_input_dim=38, # Standard RDKit featurization
+                        hidden_dim=mh.get("hidden_dim", 64),
+                        num_layers=mh.get("num_layers", 4),
+                        dropout=mh.get("dropout", 0.1)
+                    )
+                    # Load state dict (MiniJudgeModule has self.model)
+                    s_dict = {k[6:]: v for k, v in m_ckpt["state_dict"].items() if k.startswith("model.")}
+                    p_model.load_state_dict(s_dict)
+                    p_model = p_model.to(self.device).eval()
+                    for p in p_model.parameters(): p.requires_grad = False
+                    self.property_judges[prop] = p_model
+                logger.info(f"Loaded {len(self.property_judges)} Mini Judges.")
 
     def forward(self, batch):
         # We don't typically use the forward method directly in diffusion modules.
         pass
 
     def get_causal_embedding(self, batch) -> torch.Tensor:
-        """Extracts the 128/256-dim causal embedding from the frozen judge."""
+        """Extracts combined embeddings from all judges.
+        
+        Concatenates:
+        - 256-dim Causal Subgraph embedding from original judge.
+        - 3x64-dim Graph-level embeddings from mini judges (LogP, QED, SAS).
+        Total: 448 dims.
+        """
         from torch_geometric.nn import global_mean_pool
         
-        self.causal_judge.eval()
-        with torch.no_grad():
-            # 1. Encode graph structure via backbone
-            h_node = self.causal_judge.backbone.encode(
-                x=batch.x, 
-                edge_index=batch.edge_index, 
-                edge_attr=batch.edge_attr, 
-                batch=batch.batch
-            )
+        # 1. Prepare features (DiGress -> Judge featurization)
+        # Note: If batch already has RDKit features (e.g. from data loader), use them.
+        # But during sampling, we only have atom/edge types, so we must convert.
+        if batch.x.shape[1] == self.num_node_classes:
+            x_j, e_j = digress_to_judge_features(batch.x.argmax(dim=-1), 
+                                                batch.edge_attr.argmax(dim=-1), 
+                                                batch.edge_index)
+        else:
+            x_j, e_j = batch.x, batch.edge_attr
+
+        embeddings = []
+
+        # 2. Extract from Causal Judge
+        if self.causal_judge is not None:
+            self.causal_judge.eval()
+            with torch.no_grad():
+                h_node = self.causal_judge.backbone.encode(x=x_j, edge_index=batch.edge_index, 
+                                                        edge_attr=e_j, batch=batch.batch)
+                mask = torch.sigmoid(self.causal_judge.extractor(h_node))
+                h_graph_c = global_mean_pool(h_node * mask, batch.batch)
+                causal_emb = self.causal_judge.causal_bottleneck(h_graph_c)
+                embeddings.append(causal_emb)
+
+        # 3. Extract from Mini Judges
+        for prop in ["logp", "qed", "sascore"]:
+            if prop in self.property_judges:
+                p_judge = self.property_judges[prop]
+                p_judge.eval()
+                with torch.no_grad():
+                    # We need the graph-level latent before the scalar head
+                    # h_graph is the output of global_mean_pool in MiniJudgeGIN
+                    # To avoid modifying MiniJudgeGIN, we'll re-implement the pooling here
+                    # using the model's internal layers if possible, but it's cleaner
+                    # to just get the final scalar if we want scalar conditioning,
+                    # OR we could modify MiniJudgeGIN to return both.
+                    # Given the 192-dim target, the user likely wants the Laten space.
+                    
+                    # Re-running the logic to get the latent (h_graph from line 119 in mini_judge_gin.py)
+                    # Let's add a helper to MiniJudgeGIN or just use the scalar for now?
+                    # No, 3x64 = 192. So we need the latent.
+                    
+                    # HACK: If we can't change the model, we'll just project the scalar? 
+                    # No, that's bad. I'll assume MiniJudgeGIN.forward can return the latent.
+                    # Wait, I'll just use the internal layers since it's a Sequential/ModuleList.
+                    
+                    h = p_judge.node_proj(x_j)
+                    num_graphs = batch.batch.max().item() + 1
+                    vn_emb = torch.zeros(num_graphs, p_judge.hidden_dim, device=x_j.device)
+                    for layer_idx, block in enumerate(p_judge.blocks):
+                        h = h + vn_emb[batch.batch]
+                        h = block(h, batch.edge_index)
+                        h_pool = global_mean_pool(h, batch.batch)
+                        vn_emb = vn_emb + p_judge.vn_encoder[layer_idx](h_pool)
+                    
+                    h = p_judge.final_norm(h)
+                    h_graph = global_mean_pool(h, batch.batch)
+                    embeddings.append(h_graph)
+
+        if not embeddings:
+            return torch.zeros((batch.num_graphs, self.hparams.causal_cond_dim), device=self.device)
             
-            # 2. Predict node mask
-            mask_logits = self.causal_judge.extractor(h_node)
-            mask = torch.sigmoid(mask_logits)
-            
-            # 3. Apply mask to get Causal Subgraph features
-            h_node_c = h_node * mask
-            
-            # 4. Pool to graph level
-            h_graph_c = global_mean_pool(h_node_c, batch.batch)
-            
-            # 5. Project through bottleneck to get final causal_emb
-            causal_emb = self.causal_judge.causal_bottleneck(h_graph_c)
-            
-        return causal_emb
+        return torch.cat(embeddings, dim=-1)
 
     def _shared_step(self, batch, stage: str, p_uncond: float):
         # 1. Extract Target Causal Embedding (Condition)
@@ -387,23 +451,71 @@ class DiGressModule(pl.LightningModule):
         max_allowed_edges = nodes_per_graph.float() + 3.0
         loss_dist = F.relu(expected_total_edges - max_allowed_edges).mean()
 
-        # D. Valency Penalty
+        # D. Ring Complexity Loss (Anti-Strained + Anti-Macrocycle)
+        # Tr(A^k) counts the number of closed walks of length k. For a simple graph:
+        #   - Tr(A^3)/6 ≈ number of triangles (epoxide-like strained 3-rings)
+        #   - Tr(A^4)/8 ≈ number of cyclobutanes (strained 4-rings)
+        # Drug-like molecules (SA score < 3) rarely have these features.
+        
+        # Binary adjacency for ring counting (detached — no gradients needed for penalty)
+        adj_binary = (adj_dense.detach() > 0.3).float()
+        adj_binary[:, range(max_nodes), range(max_nodes)] = 0  # Remove self-loops (batched)
+        
+        # Compute powers efficiently: reuse intermediate results
+        A2 = torch.bmm(adj_binary, adj_binary)
+        A3 = torch.bmm(A2, adj_binary)
+        A4 = torch.bmm(A3, adj_binary)
+        
+        trace_A3 = torch.diagonal(A3, dim1=-2, dim2=-1).sum(dim=-1)
+        trace_A4 = torch.diagonal(A4, dim1=-2, dim2=-1).sum(dim=-1)
+        
+        # Large ring penalties: compute A^9 and A^10 efficiently
+        # A^8 = A^4 @ A^4 (reuse!), A^9 = A^8 @ A, A^10 = A^8 @ A^2 (reuse!)
+        # This is 3 bmm calls instead of 6
+        A8 = torch.bmm(A4, A4)
+        A9 = torch.bmm(A8, adj_binary)
+        A10 = torch.bmm(A8, A2)
+        
+        trace_A9 = torch.diagonal(A9, dim1=-2, dim2=-1).sum(dim=-1)
+        trace_A10 = torch.diagonal(A10, dim1=-2, dim2=-1).sum(dim=-1)
+        
+        n_nodes_f = nodes_per_graph.float().clamp(min=1.0)
+        
+        small_ring_penalty = (
+            F.relu(trace_A3 / n_nodes_f - 1.5) +
+            F.relu(trace_A4 / n_nodes_f - 2.0)
+        ).mean()
+        
+        macro_ring_penalty = (
+            F.relu(trace_A9 / n_nodes_f - 80.0) +
+            F.relu(trace_A10 / n_nodes_f - 150.0)
+        ).mean()
+        
+        loss_ring = small_ring_penalty + macro_ring_penalty
+
+
+        # E. Valency Penalty
         src, dst = edge_index_dense
         node_valency = torch.zeros(X_noisy.shape[0], device=self.device)
         node_valency.scatter_add_(0, src, expected_bonds)
         valency_penalty = F.relu(node_valency - 4.5).mean()
         
-        # Combine losses: Shock Therapy to break conditioning deafness
+        # Combine losses
         loss = (1.0 * loss_nodes + 
                 4.0 * loss_edges + 
                 2.0 * valency_penalty + 
                 1.0 * loss_conn + 
-                0.5 * loss_dist)
+                0.5 * loss_dist +
+                1.0 * loss_ring)
+
         
         self.log(f"{stage}_loss", loss, batch_size=batch_size, prog_bar=True)
         self.log(f"{stage}_node_loss", loss_nodes, batch_size=batch_size)
         self.log(f"{stage}_edge_loss", loss_edges, batch_size=batch_size)
         self.log(f"{stage}_valency_penalty", valency_penalty, batch_size=batch_size)
+        self.log(f"{stage}_ring_loss", loss_ring, batch_size=batch_size)
+        self.log(f"{stage}_small_ring_penalty", small_ring_penalty, batch_size=batch_size)
+        self.log(f"{stage}_macro_ring_penalty", macro_ring_penalty, batch_size=batch_size)
         
         return loss
 
@@ -413,6 +525,16 @@ class DiGressModule(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         # Validation shouldn't use CFG dropout to get an accurate conditional loss
         return self._shared_step(batch, "val", 0.0)
+            
+    def train(self, mode: bool = True):
+        """Override train to force frozen judges to stay in eval mode."""
+        super().train(mode)
+        if hasattr(self, 'causal_judge') and self.causal_judge is not None:
+            self.causal_judge.eval()
+        if hasattr(self, 'property_judges'):
+            self.property_judges.eval()  # Set the ModuleDict container to eval mode
+            for judge in self.property_judges.values():
+                judge.eval()
 
     def configure_optimizers(self):
         optimizer = torch.optim.AdamW(
