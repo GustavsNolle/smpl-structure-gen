@@ -1,73 +1,33 @@
-# MolPropGNN
+# SMPL Structure Gen
 
-**Small Molecule Property Prediction with Graph Neural Networks**
-
-## Research Question
-
-> Can graph neural networks that operate directly on molecular graph structure predict molecular properties better than classical fingerprint-based ML baselines?
->
-> *Supporting question:* Does explicit message passing over atomic connectivity improve prediction beyond global molecular descriptors alone?
+**Anchor-Guided 3D Molecule Generation via Causal DiGress & Automated Docking**
 
 ## Overview
 
-This project represents small molecules as **molecular graphs** where:
-- **Nodes** = atoms (with features: atomic number, degree, hybridization, aromaticity, etc.)
-- **Edges** = chemical bonds (with features: bond type, stereo, conjugation, ring membership)
-- **Graph-level labels** = molecular properties (solubility, permeability, toxicity, etc.)
+This repository provides an end-to-end pipeline for generating novel, drug-like 3D molecular structures conditionally guided by anchor molecules. It transitions from traditional property prediction (MolPropGNN) to a full generative pipeline utilizing Graph Neural Networks, Causal Learning, and Discrete Denoising Diffusion (DiGress). 
 
-The model predicts **molecular properties** from the MoleculeNet benchmark using:
-- Atom-level features derived from RDKit
-- Bond-level features
-- Graph neural network architectures (GCN, GAT, EGNN, GINE, RGCN)
+The generated molecules are evaluated using lightweight "Mini Judges" (for SA Score, QED, LogP) and validated through an automated AutoDock Vina pipeline.
 
 ## Project Structure
 
-```
-mol_prop_gnn/
-├── configs/              # YAML configuration files
-├── data/                 # Raw and processed data (gitignored)
-├── scripts/              # Entry-point scripts
-│   ├── train.py          # Main training script
-│   ├── evaluate_models.py # Model comparison
-│   └── run_experiments.py # Multi-dataset benchmark
-├── src/smpl-structure-gen/  # Main source package
-│   ├── data/             # Data loading, SMILES→graph conversion
-│   ├── models/           # GCN, GAT, EGNN, GINE, RGCN, baselines
-│   ├── training/         # PyTorch Lightning module
-│   ├── evaluation/       # Classification & regression metrics
-│   └── utils/            # Configuration utilities
-└── tests/                # Unit & smoke tests
+```text
+smpl-structure-gen/
+├── configs/              # YAML configuration files for training
+├── data/                 # Raw and processed data (ZINC250K, MoleculeNet)
+├── docking_pipeline/     # Automated Vina docking and PyMOL rendering scripts
+├── scripts/              # Training and inference entry-points
+│   ├── train_pretrain_masked.py  # Phase 1: Self-supervised pre-training
+│   ├── train_causal.py           # Phase 1: Causal Semi-supervised mapping
+│   ├── train_mini_judge.py       # Phase 2: Property Mini Judges
+│   ├── train_digress.py          # Phase 3: Causal DiGress generation model
+│   └── inference_guided.py       # Anchor-guided generation inference
+├── src/mol_prop_gnn/     # Main source package containing models, data, and utils
+└── tests/                # Unit tests
 ```
 
-## Supported Datasets (MoleculeNet)
+## Setup & Installation
 
-| Dataset | Task | # Molecules | Metric |
-|---------|------|-------------|--------|
-| **BBBP** | Classification | 2,039 | AUROC |
-| **ESOL** | Regression | 1,128 | RMSE |
-| BACE | Classification | 1,513 | AUROC |
-| FreeSolv | Regression | 642 | RMSE |
-| Lipophilicity | Regression | 4,200 | RMSE |
-| HIV | Classification | 41,127 | AUROC |
-| Tox21 | Multi-task Classification | 7,831 | AUROC |
-
-## Model Benchmark
-
-| Model | Type | Graph Structure? |
-|-------|------|-----------------|
-| RDKit (RF) | Random Forest on descriptors | ✗ |
-| XGBoost (FP) | XGBoost on Morgan fingerprints | ✗ |
-| LightGBM (FP) | LightGBM on Morgan fingerprints | ✗ |
-| MLP Baseline | MLP on pooled atom features | ✗ |
-| **MolGCN** | GINE-based GNN | ✓ |
-| **MolGAT** | GATv2 attention GNN | ✓ |
-| **MolEGNN** | Edge-conditioned GNN | ✓ |
-| **MolGINE** | GINE + ReZero hybrid | ✓ |
-| **MolRGCN** | Relational GCN (bond-typed) | ✓ |
-
-## Setup
-
-This project uses [uv](https://github.com/astral-sh/uv) for Python package and environment management.
+This project uses [uv](https://github.com/astral-sh/uv) for fast Python package management.
 
 ### 1. Install uv
 
@@ -92,38 +52,73 @@ cd smpl-structure-gen
 uv sync --all-extras
 ```
 
-## Quick Start
+### 3. Docking Dependencies
+
+To use the automated docking and rendering pipeline, install additional PyMOL dependencies. (You may also need to install PyMOL via conda or OS package manager if pip installation fails).
 
 ```bash
-# 1. Train the GCN model on BBBP (auto-downloads dataset)
-uv run python scripts/train.py --config configs/default.yaml
-
-# 2. Train a specific model
-uv run python scripts/train.py --config configs/default.yaml --model gat
-
-# 3. Run full multi-model benchmark
-uv run python scripts/run_experiments.py
-
-# 4. Evaluate all trained models
-uv run python scripts/evaluate_models.py
-
-# 5. Run tests
-uv run pytest tests/ -v
+cd docking_pipeline
+chmod +x setup_docking.sh
+./setup_docking.sh
+cd ..
 ```
 
-## Data Source
+## Pipeline & Replication Instructions
 
-**MoleculeNet** — A benchmark for molecular machine learning providing standardized datasets with scaffold-based splitting for realistic evaluation.
+The workflow is divided into three training phases, followed by generation and docking validation.
 
-Reference: Wu et al., "MoleculeNet: A Benchmark for Molecular Machine Learning", *Chemical Science*, 2018.
+### Phase 1: Pre-training & Causal Mapping
+Train the base Graph Neural Network representations using masked node prediction and causal learning on molecular datasets.
+
+```bash
+# Self-supervised continuous masked node prediction on ZINC
+uv run python scripts/train_pretrain_masked.py
+
+# Map Semi-Supervised Training via Graph Causal Learning
+uv run python scripts/train_causal.py --config configs/causal.yaml
+```
+
+### Phase 2: Mini Judges
+Train lightweight GIN models to act as property evaluators (SA Score, QED, LogP) during the diffusion process.
+
+```bash
+# Train all property judges (sascore, qed, logp)
+uv run python scripts/train_mini_judge.py --property all
+```
+
+### Phase 3: Causal DiGress (Diffusion)
+Train the Discrete Denoising Diffusion model, guided by the frozen Causal Judge from Phase 1.
+
+```bash
+uv run python scripts/train_digress.py --config configs/digress.yaml
+```
+
+### Inference: Anchor-Guided Generation
+Generate new molecules conditionally guided by specific anchor molecules (e.g., FDA-approved drugs or clinical failures). Generates molecules and creates image grids.
+
+```bash
+uv run python scripts/inference_guided.py --num_samples 500 --batch_size 50
+```
+*Outputs will be saved to the `outputs/` directory, including CSVs of valid/filtered molecules and grid images.*
+
+### Docking Validation
+Dock the generated molecules against a target receptor (e.g., `2VBC`) using AutoDock Vina.
+
+```bash
+# Run the docking orchestrator
+uv run python docking_pipeline/docking_pipeline.py --input outputs/filtered_molecules.csv --target 2VBC --out_dir docking_results
+
+# Render the best hits using PyMOL
+uv run python docking_pipeline/render_hits.py --receptor docking_results/2VBC_clean.pdb --ligand docking_results/ligand_1_docked.pdbqt --out hit_render.png
+```
 
 ## Tech Stack
 
-- **PyTorch** + **PyTorch Geometric** — GNN implementation
-- **PyTorch Lightning** — training loop, logging, checkpointing
-- **RDKit** — molecular graph construction & featurization
-- **scikit-learn** — baseline models & metrics
-- **XGBoost** / **LightGBM** — gradient boosted tree baselines
+- **PyTorch & PyTorch Geometric** — GNN backbone and Diffusion implementation
+- **PyTorch Lightning & ClearML** — Training loop, distributed training, and tracking
+- **RDKit** — Molecular graph construction, SA Score, QED, and 2D→3D conversion
+- **Meeko & AutoDock Vina** — Ligand preparation and automated molecular docking
+- **PyMOL** — Automated high-resolution pose rendering
 
 ## License
 
